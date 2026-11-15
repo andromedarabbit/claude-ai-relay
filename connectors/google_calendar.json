@@ -1,0 +1,6 @@
+{
+  "name": "gcal",
+  "match": "Google Calendar",
+  "read": ["list_calendars", "list_events", "get_event", "search_events"],
+  "write": {}
+}
