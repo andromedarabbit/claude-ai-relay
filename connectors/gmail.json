@@ -1,0 +1,11 @@
+{
+  "name": "gmail",
+  "match": "Gmail",
+  "read": ["search_threads", "get_thread", "get_message", "list_labels"],
+  "write": {
+    "unlabel_message": {
+      "fixed": {"labelIds": ["INBOX"]},
+      "types": {"messageId": "string"}
+    }
+  }
+}

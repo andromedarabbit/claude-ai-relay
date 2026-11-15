@@ -1,0 +1,18 @@
+version: 2
+
+project_name: claude-ai-relay
+
+builds:
+  - id: claude-ai-relay
+    binary: claude-ai-relay
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    ldflags: ["-s -w"]
+
+archives:
+  - id: binaries
+    formats: [tar.gz]
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+
+release:
+  draft: true
