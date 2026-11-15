@@ -36,6 +36,7 @@ go test 파일은 없다 — `selfcheck`가 assert 기반 검증이고, 네트�
 
 ## 문서 규약
 
+- `docs/solutions/` — 과거 문제 해결 기록(버그·워크플로·도구 결정). 카테고리 디렉터리 + YAML frontmatter(`module`, `tags`, `problem_type`)로 검색. 문서화된 영역 작업 시 참고.
 - `docs/DECISIONS.md`가 게이트다: 코드 작성은 DECISIONS.md에 "구현 시작" 항목이 기록된 뒤에만.
 - `docs/MEASURED-FACTS.md`는 호출 규격의 근거 문서다 — 프로토콜 관련 상수·헤더를 바꿀 때는 실측이 먼저다.
 - `docs/reference/connector_relay.py`는 gmail-triage에서 복사한 원형 스냅샷으로, 수정 대상이 아니다. 훅 relay 방식은 폴백으로 문서화만 한다(D2).
