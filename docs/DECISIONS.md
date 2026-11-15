@@ -74,8 +74,16 @@
 
 ## 구현 시작
 
-2026-11-15 승인. 범위: v0.1 단위 1~5(전송·선언·도구 표면·status·패키징), 언어 Go, 계획 파일은 세션 플랜(`/Users/keaton/.claude/plans/linked-tinkering-turtle.md`).
+2026-11-15 승인. 범위: v0.1 단위 1~5(전송·선언·도구 표면·status·패키징), 언어 Go, 계획 파일은 세션 플랜(`~/.claude/plans/linked-tinkering-turtle.md`).
 
 ## v0.1 완료 (2026-11-15)
 
 단위 1~5 전부 종료 기준 충족 + e2e 시나리오 통과(전송 probe 200, 2커넥터 혼합, 읽기 체인, **쓰기+독립 검증**(아카이빙 재조회), 음성 4종 사전 거부, status 2/17/15, **API env 세션에서 `mcp__claude-ai-relay__*` 실사용**). 산출: `main.go`(Go stdlib만) + `connectors/*.json`(embed) + `.goreleaser.yaml`, 사용자 스코프 등록. 후보: GitHub 공개(module 경로·go install·brew tap), fixed 키 주입(v0.2).
+
+## v0.2 (2026-11-15)
+
+- **커넥터 10종 추가** (읽기 전용): Slack·Google Drive·Atlassian Rovo·Zoom·Meetings·Claude Data·Claude Docs·Google Docs/Sheets/Slides — 쓰기는 선언 없음(미노출). Zapier·Sentry·Miro·Granola·Figma는 미연결(401)이라 제외
+- **fixed 주입**: 쓰기 제약의 fixed 키를 호출자가 생략하면 relay가 주입한다 (위반값은 기존대로 거부)
+- **선언 스캔**: `~/.config/claude-ai-relay/connectors/*.json` 오버레이로 재빌드 없이 선언 추가·덮어쓰기 (fail fast 유지)
+- **프록시 세션 수립**(전송 수정): 커넥터별 initialize 후 세션 uuid 재사용 — stateful 업스트림(Slack 등) 지원. 실측 근거는 MEASURED-FACTS v0.2
+- 모듈 경로 `github.com/andromedarabbit/claude-ai-relay` 확정 (go install)

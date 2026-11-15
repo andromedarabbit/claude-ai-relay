@@ -1,0 +1,19 @@
+{
+  "name": "zoom",
+  "match": "Zoom for Claude",
+  "read": [
+    "capabilities_discover",
+    "capabilities_describe",
+    "get_recording_resource",
+    "hub_get_file_content",
+    "my_notes_get_note_content",
+    "search",
+    "search_meetings",
+    "search_describe_capabilities",
+    "get_file_content",
+    "get_meeting_assets",
+    "recordings_list",
+    "canvas_list_file_collaborators"
+  ],
+  "write": {}
+}

@@ -49,7 +49,7 @@ relay 메커니즘의 유일한 실측 근거. gmail-triage 스킬(git.baemin.in
 
 | 항목 | 값 |
 |---|---|
-| 토큰 | 키체인 `Claude Code-credentials`는 **다중 항목**: acct `unknown`(빈 레거시), acct `keaton`(accessToken/refreshToken 108ch, 사용 시점에 갱신됨). `-a` 항목별 조회 필수 |
+| 토큰 | 키체인 `Claude Code-credentials`는 **다중 항목**: acct `unknown`(빈 레거시), acct `<user>`(accessToken/refreshToken 108ch, 사용 시점에 갱신됨). `-a` 항목별 조회 필수 |
 | 커넥터 발견 | `GET api.anthropic.com/v1/mcp_servers` + 헤더 `anthropic-beta: mcp-servers-2025-12-04`, `anthropic-version: 2023-06-01` → 17커넥터 (`mcpsrv_` id, url, 도구별 `effective_max_permission`, `eligible`) |
 | 도구 호출 | `POST mcp-proxy.anthropic.com/v1/mcp/{mcpsrv_id}` + `Authorization: Bearer`, `X-Mcp-Client-Session-Id: <uuid>`, `anthropic-version` → initialize 200, tools/list 200 (Gmail 30도구, 885ms, live 스키마), tools/call `list_labels` 200 (729ms, 라벨 14개) |
 | User-Agent | `python-urllib` 기본 UA는 Cloudflare 1010 차단. `claude-cli/…` UA는 통과 |
@@ -78,3 +78,14 @@ relay 메커니즘의 유일한 실측 근거. gmail-triage 스킬(git.baemin.in
 | 쓰기 e2e | `call_write gmail.unlabel_message` (프로모션 메일 1건 아카이빙) → 재조회 `get_message`에서 labelIds `INBOX` 소실(`CATEGORY_PROMOTIONS`만 잔존), `in:inbox` 재검색 0건 — 쓰기+독립 검증 통과 |
 | `fixed` 키 계약 | 호출자가 고정값을 **명시적으로 실어야** 한다(주입 아님) — `labelIds` 누락 시 `constraint` 사전 거부. 개선 후보(v0.2): relay가 fixed 키를 주입해 호출자 생략 허용 |
 | 도구 사용성 | search_threads 스키마의 pageSize·query 등 live 스키마가 그대로 노출·동작. 업스트림 본문(plaintext/html) 무손실 전달 확인 |
+
+## 2026-11-15 실측 — v0.2 (세션·커넥터 확장)
+
+| 항목 | 값 |
+|---|---|
+| **프록시 세션 (신규 사실)** | 호출마다 새 `X-Mcp-Client-Session-Id`를 쓰면 일부 업스트림(Slack 등)이 `400: Request must be an initialize request if no session ID is provided`로 거부. stateless 업스트림(Gmail·Calendar)은 새 uuid로도 통과 — v0.1이 우연히 동작한 이유. 해결: 커넥터별 initialize 1회 → 세션 uuid 저장·재사용, "initialize request" 400 시 1회 재수립 |
+| tools/list | initialize 없이 새 uuid로도 12커넥터 전부 통과 (세션 강제는 tools/call 쪽) |
+| 미연결 커넥터 | Zapier·Sentry·Miro·Granola·Figma는 프록시 tools/list조차 401 (커넥터별 OAuth 미연결) — 선언 불가, status 미선언로 표시 |
+| 커넥터 12개 | Claude Data 3, Claude Docs 2, Meetings 5, Slides 3, Docs 1, Sheets 2, Slack 12, Zoom 12, Drive 9, Atlassian Rovo 26 도구 읽기 선언 — 전부 live 목록과 대조 일치 |
+| fixed 주입 | v0.2부터 호출자가 fixed 키를 생략하면 relay가 주입 (다른 값 실으면 여전히 `constraint` 거부) |
+| 선언 스캔 | `~/.config/claude-ai-relay/connectors/*.json` 오버레이 — 내장 선언을 같은 name으로 덮어쓰거나 신규 추가. macOS `os.UserConfigDir`은 `~/Library/Application Support`라 `~/.config`로 규약 고정 |

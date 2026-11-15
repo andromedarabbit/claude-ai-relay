@@ -1,0 +1,9 @@
+{
+  "name": "gsheets",
+  "match": "Google Sheets",
+  "read": [
+    "get_values",
+    "get_spreadsheet"
+  ],
+  "write": {}
+}
