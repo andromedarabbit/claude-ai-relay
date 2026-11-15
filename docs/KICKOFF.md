@@ -38,7 +38,7 @@ DESIGN-QUESTIONS.md에 적은 가설(Gmail 전용으로 시작해도 선언 구�
 실행 한 줄:
 
 ```bash
-orca worktree create --repo id:<repoId> --name design-kickoff --agent claude --prompt "$(cat docs/KICKOFF.md 중 프롬프트 블록)" --json
+orca worktree create --repo id:a1e5be8f-c44c-40e6-b11b-0700b4c3fd50 --name design-kickoff --agent claude --prompt "$(docs/KICKOFF.md의 프롬프트 블록 본문)" --json
 ```
 
-(정확한 `--repo id:` 값은 `orca repo list --json`으로 확인)
+(repo id는 2026-11-15 등록 시점 값. 바뀌면 `orca repo list --json`으로 다시 확인)
