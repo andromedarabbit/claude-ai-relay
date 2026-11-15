@@ -1,0 +1,10 @@
+{
+  "name": "claude_data",
+  "match": "Claude Data",
+  "read": [
+    "list_certified_queries",
+    "get_certified_query_source",
+    "get_live_results"
+  ],
+  "write": {}
+}

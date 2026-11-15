@@ -1,0 +1,12 @@
+{
+  "name": "meetings",
+  "match": "Meetings",
+  "read": [
+    "list_meetings",
+    "get_meeting",
+    "get_meeting_transcript",
+    "follow_meeting_transcript",
+    "get_meeting_action_items"
+  ],
+  "write": {}
+}

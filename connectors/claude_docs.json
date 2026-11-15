@@ -1,0 +1,9 @@
+{
+  "name": "claude_docs",
+  "match": "Claude Docs",
+  "read": [
+    "read",
+    "query"
+  ],
+  "write": {}
+}

@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"sort"
@@ -217,14 +218,44 @@ func proxyCall(cred credentials, mcpsrvID, method string, params any) (json.RawM
 	})
 }
 
+// proxySessions — 커넥터별 프록시 세션 (mcpsrvID → uuid). 일부 업스트림(Slack 등)은
+// initialize로 수립된 세션의 tools/call만 받는다. 서버 루프가 단일 스레드라 잠금 불필요.
+var proxySessions = map[string]string{}
+
+var initParams = map[string]any{
+	"protocolVersion": "2025-06-18", "capabilities": map[string]any{},
+	"clientInfo": map[string]any{"name": "claude-ai-relay", "version": "v0.2"},
+}
+
 func proxyCallOnce(cred credentials, mcpsrvID, method string, params any) (json.RawMessage, error) {
+	sess, known := proxySessions[mcpsrvID]
+	if !known {
+		sess = newUUID()
+		if _, err := rawProxy(cred, mcpsrvID, sess, "initialize", initParams); err != nil {
+			return nil, err
+		}
+		proxySessions[mcpsrvID] = sess
+	}
+	raw, err := rawProxy(cred, mcpsrvID, sess, method, params)
+	if err == nil {
+		return raw, nil
+	}
+	// 세션 무효화(만료 등)면 1회 재수립 후 재시도
+	if known && strings.Contains(err.Error(), "initialize request") {
+		delete(proxySessions, mcpsrvID)
+		return proxyCallOnce(cred, mcpsrvID, method, params)
+	}
+	return nil, err
+}
+
+func rawProxy(cred credentials, mcpsrvID, sess, method string, params any) (json.RawMessage, error) {
 	payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
 	req, _ := http.NewRequest("POST", proxyBase+mcpsrvID, bytes.NewReader(payload))
 	req.Header.Set("Authorization", "Bearer "+cred.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("User-Agent", userAgent)
-	req.Header.Set("X-Mcp-Client-Session-Id", newUUID())
+	req.Header.Set("X-Mcp-Client-Session-Id", sess)
 	req.Header.Set("anthropic-version", anthropicVer)
 	resp, err := newHTTPClient().Do(req)
 	if err != nil {
@@ -283,7 +314,29 @@ type Declaration struct {
 	Write map[string]WriteConstraint `json:"write"`
 }
 
-// loadDeclarations — 구조가 깨지면 즉시 실패 (fail fast). 중복 name도 기각.
+// parseDeclaration — 선언 1건 구조 검증 후 적재. 같은 name이면 나중 것이 덮어쓴다(스캔 오버레이용).
+func parseDeclaration(source string, raw []byte, decls map[string]Declaration) error {
+	var d Declaration
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return usageErr("%s 파싱 실패: %v", source, err)
+	}
+	if d.Name == "" || d.Match == "" {
+		return usageErr("%s: name과 match는 필수", source)
+	}
+	for _, t := range d.Read {
+		if _, dup := d.Write[t]; dup {
+			return usageErr("%s: %s가 read·write 양쪽에 선언됨", source, t)
+		}
+	}
+	if _, dup := decls[d.Name]; dup {
+		fmt.Fprintf(os.Stderr, "relay: 선언 %s를 %s이(가) 덮어씀\n", d.Name, source)
+	}
+	decls[d.Name] = d
+	return nil
+}
+
+// loadDeclarations — 내장 선언 + ~/.config/claude-ai-relay/connectors/*.json 오버레이.
+// 재빌드 없이 선언 추가·수정을 허용한다 (규약 고정 경로, 설정 변수 없음).
 func loadDeclarations() (map[string]Declaration, error) {
 	entries, err := declarationFS.ReadDir("connectors")
 	if err != nil {
@@ -298,22 +351,32 @@ func loadDeclarations() (map[string]Declaration, error) {
 		if err != nil {
 			return nil, usageErr("%s 읽기 실패: %v", e.Name(), err)
 		}
-		var d Declaration
-		if err := json.Unmarshal(raw, &d); err != nil {
-			return nil, usageErr("%s 파싱 실패: %v", e.Name(), err)
+		if err := parseDeclaration("내장:"+e.Name(), raw, decls); err != nil {
+			return nil, err
 		}
-		if d.Name == "" || d.Match == "" {
-			return nil, usageErr("%s: name과 match는 필수", e.Name())
-		}
-		for _, t := range d.Read {
-			if _, dup := d.Write[t]; dup {
-				return nil, usageErr("%s: %s가 read·write 양쪽에 선언됨", e.Name(), t)
+	}
+	// 스캔 경로는 ~/.config/claude-ai-relay/connectors 로 규약 고정 (플랫폼 무관 단일 경로)
+	home, herr := os.UserHomeDir()
+	cfgRoot := os.Getenv("XDG_CONFIG_HOME")
+	if cfgRoot == "" && herr == nil {
+		cfgRoot = filepath.Join(home, ".config")
+	}
+	if cfgRoot != "" {
+		scan := filepath.Join(cfgRoot, "claude-ai-relay", "connectors")
+		if files, err := os.ReadDir(scan); err == nil {
+			for _, f := range files {
+				if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
+					continue
+				}
+				raw, err := os.ReadFile(filepath.Join(scan, f.Name()))
+				if err != nil {
+					return nil, usageErr("%s 읽기 실패: %v", f.Name(), err)
+				}
+				if err := parseDeclaration("스캔:"+f.Name(), raw, decls); err != nil {
+					return nil, err // 스캔 선언이 깨지면 fail fast — 조용히 무시하지 않는다
+				}
 			}
 		}
-		if _, dup := decls[d.Name]; dup {
-			return nil, usageErr("선언 name 중복: %s", d.Name)
-		}
-		decls[d.Name] = d
 	}
 	if len(decls) == 0 {
 		return nil, usageErr("선언이 하나도 없음")
@@ -556,21 +619,26 @@ func typeErr(toolRef, key, want string) error {
 	return &RelayError{Kind: "constraint", Detail: fmt.Sprintf("%s: 인자 %s는 %s여야 함", toolRef, key, want)}
 }
 
-// checkWriteConstraint — fixed 완전일치 + types 타입 일치. 미선언 키는 validateArgs가 거부한다.
-func checkWriteConstraint(toolRef string, wc WriteConstraint, args map[string]any) error {
+// applyWriteConstraint — fixed 키는 호출자가 생략하면 주입, 다른 값을 실으면 거부.
+// types 키는 타입만 검사. 미선언 키는 validateArgs가 거부한다.
+func applyWriteConstraint(toolRef string, wc WriteConstraint, args map[string]any) (map[string]any, error) {
+	out := make(map[string]any, len(args)+len(wc.Fixed))
+	for k, v := range args {
+		out[k] = v
+	}
 	for k, want := range wc.Fixed {
-		got, ok := args[k]
-		if !ok || !reflect.DeepEqual(got, want) {
-			return &RelayError{Kind: "constraint",
+		if got, ok := args[k]; ok && !reflect.DeepEqual(got, want) {
+			return nil, &RelayError{Kind: "constraint",
 				Detail: fmt.Sprintf("%s: 인자 %s는 고정값 %s여야 함 (쓰기 제약)", toolRef, k, fmt.Sprint(want))}
 		}
+		out[k] = want
 	}
 	for k, want := range wc.Types {
 		if err := checkType(toolRef, k, want, args[k]); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return out, nil
 }
 
 // callUpstream — 검증 통과 후 실제 호출. 업스트림 content를 그대로 전달한다.
@@ -652,7 +720,8 @@ func toolCall(kind string, args map[string]any) (any, bool, error) {
 		return nil, false, usageErr("%s는 %s 도구 — call_%s로 호출하세요", ref, gotKind, gotKind)
 	}
 	if kind == "write" {
-		if err := checkWriteConstraint(ref, d.Write[tool], callArgs); err != nil {
+		callArgs, err = applyWriteConstraint(ref, d.Write[tool], callArgs)
+		if err != nil {
 			return nil, false, err
 		}
 	}
@@ -984,16 +1053,29 @@ func cmdSelfcheck() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	// 내장 선언 2건 구조
+	// 내장 선언 구조 (커넥터 수는 선언 추가에 따라 변함 — 핵심 2건 존재만 단정)
 	decls, err := loadDeclarations()
-	if err := assert(err == nil && len(decls) == 2, fmt.Sprintf("선언 로드: %v", err)); err != nil {
+	if err := assert(err == nil && len(decls) >= 2, fmt.Sprintf("선언 로드: %v", err)); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
 	gmail := decls["gmail"]
-	if err := assert(len(gmail.Read) == 4 && gmail.Write["unlabel_message"].Fixed["labelIds"] != nil,
-		"gmail 선언 내용"); err != nil {
+	gcal, gcalOK := decls["gcal"]
+	if err := assert(gcalOK && len(gmail.Read) == 4 && gmail.Write["unlabel_message"].Fixed["labelIds"] != nil && len(gcal.Read) == 4,
+		"핵심 선언 내용"); err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	// 쓰기 제약: fixed 주입 + 위반 거부
+	injected, err := applyWriteConstraint("gmail.unlabel_message",
+		gmail.Write["unlabel_message"], map[string]any{"messageId": "m1"})
+	if err := assert(err == nil && reflect.DeepEqual(injected["labelIds"], []any{"INBOX"}), "fixed 주입"); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 2
+	}
+	if _, err := applyWriteConstraint("gmail.unlabel_message",
+		gmail.Write["unlabel_message"], map[string]any{"messageId": "m1", "labelIds": []any{"STARRED"}}); err == nil {
+		fmt.Fprintln(os.Stderr, "selfcheck 실패: fixed 위반을 잡지 못함")
 		return 2
 	}
 	// 선언-실제 대조: 없는 도구 감지
@@ -1016,7 +1098,7 @@ func cmdSelfcheck() int {
 		fmt.Fprintln(os.Stderr, "selfcheck 실패: 미발견 커넥터를 잡지 못함")
 		return 2
 	}
-	fmt.Println("selfcheck=ok (키체인 파서·env 제거·SSE 파서·규격 상수·uuid·선언 로드·대조·매핑)")
+	fmt.Println("selfcheck=ok (키체인 파서·env 제거·SSE 파서·규격 상수·uuid·선언 로드·쓰기 제약 주입·대조·매핑)")
 	return 0
 }
 
