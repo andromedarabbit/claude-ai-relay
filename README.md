@@ -10,16 +10,32 @@ Claude Code (API 키 세션) ──stdio──▶ claude-ai-relay ──▶ mcp-
 
 ## 설치
 
+지원 플랫폼은 **Apple Silicon macOS**다. 인증이 macOS 키체인에 의존하므로 `go install`도 Linux 지원을 의미하지 않는다. Intel Mac과 Linux용 바이너리는 배포하지 않는다.
+
 ```bash
 # Homebrew
 brew install andromedarabbit/tap/claude-ai-relay
 
-# 또는 go install (Go 1.22+)
+# 또는 소스에서 설치 (Go 1.22+)
 go install github.com/andromedarabbit/claude-ai-relay@latest
-
-# 또는 GitHub Releases 바이너리 (darwin/linux × amd64/arm64)
-# https://github.com/andromedarabbit/claude-ai-relay/releases
 ```
+
+[GitHub Releases](https://github.com/andromedarabbit/claude-ai-relay/releases)에서 `claude-ai-relay_darwin_arm64.tar.gz`와 `checksums.txt`를 받아 체크섬을 확인한 뒤 압축을 풀어 설치할 수도 있다.
+
+```bash
+shasum -a 256 -c --ignore-missing checksums.txt
+tar -xzf claude-ai-relay_darwin_arm64.tar.gz
+```
+
+체크섬은 파일 손상 확인용이다. 같은 릴리스의 아카이브와 체크섬이 모두 바뀌면 출처를 인증하지 못한다. 바이너리는 Apple 서명·공증을 받지 않아 macOS에서 보안 경고가 표시될 수 있다. 신뢰 여부를 확인하고 macOS의 안내에 따라 직접 허용한다.
+
+## 릴리스 운영
+
+버전 태그를 푸시하면 GitHub Actions가 macOS arm64 아카이브와 체크섬이 담긴 릴리스 **초안**을 만든다. 산출물을 확인한 뒤 GitHub에서 직접 공개한다. 공개 이벤트 후 별도 워크플로가 최신 안정 릴리스의 체크섬을 검증하고 Homebrew tap을 갱신한다. 사전 릴리스는 Homebrew에 반영하지 않는다.
+
+원본 저장소의 Actions 비밀값 `HOMEBREW_TAP_TOKEN`에는 tap 저장소에만 접근하고 Contents 쓰기 권한을 가진 GitHub App 설치 토큰 또는 세분화 PAT가 필요하다. 릴리스 생성에는 기본 `GITHUB_TOKEN`을 사용한다. 비밀값은 저장소 설정에서 별도 승인 후 등록하고, 만료 또는 유출 시 교체한다.
+
+갱신에 실패하면 Actions의 **Update Homebrew tap** 실행 로그에서 원인을 확인한 후 해당 실행을 재실행하거나 워크플로를 수동 실행한다. 두 경로 모두 최신 공개 안정 릴리스와 체크섬을 다시 확인한다. 동일 버전의 URL·해시가 달라졌거나 기존 formula가 최신 공개 안정 릴리스보다 높은 버전을 가리킨다면 자동으로 덮어쓰지 않고 실패한다. 릴리스의 공개 상태와 기존 formula를 조사한 후 복구한다.
 
 ## 등록·사용
 

@@ -5,8 +5,8 @@ project_name: claude-ai-relay
 builds:
   - id: claude-ai-relay
     binary: claude-ai-relay
-    goos: [darwin, linux]
-    goarch: [amd64, arm64]
+    goos: [darwin]
+    goarch: [arm64]
     ldflags: ["-s -w"]
 
 archives:
@@ -14,8 +14,9 @@ archives:
     formats: [tar.gz]
     name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
 
-# homebrew tap(homebrew-tap 저장소)의 formula는 릴리스 후 수동 갱신한다
-# — goreleaser 2.20에서 brews가 폐기됐고, 4플랫폼 바이너리 formula는 12줄 고정이라 관리 부담이 없다
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
 
 release:
   draft: true
