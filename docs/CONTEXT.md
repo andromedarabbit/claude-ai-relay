@@ -9,7 +9,13 @@ Claude Code 세션의 인증이 `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`(예: 
 - claude-code 이슈 [#108528](https://github.com/anthropics/claude-code/issues/108528) — 경고가 실제 auth 소스를 식별하지 못함
 - claude-code 이슈 [#58127](https://github.com/anthropics/claude-code/issues/58127) — 문서에 이 제약이 누락됨 (changelog v2.1.139: "Remote Control, /schedule, claude.ai MCP connectors ... are now disabled when ANTHROPIC_API_KEY / apiKeyHelper / ANTHROPIC_AUTH_TOKEN is set")
 
-## 해결 아이디어: relay
+## 현재 구현
+
+이 프로젝트는 macOS 키체인에서 Claude Code의 claude.ai OAuth 토큰을 읽고 커넥터 프록시에 직접 JSON-RPC를 보낸다. 커넥터 호출에 자식 모델 프로세스나 Stop 훅을 사용하지 않는다. 토큰 갱신이 필요할 때만 Claude CLI를 실행해 갱신을 유도한다. 현재 호출 흐름과 직접 호출로 바꾼 이유는 [README](../README.md)와 [설계 결정 D2](DECISIONS.md#d2-전송-계층-직접-호출로-피벗-훅-relay는-폴백으로-문서화만)를 참고한다.
+
+## 초기 해결 아이디어: 훅 relay
+
+아래는 직접 호출 방식으로 바꾸기 전의 아이디어와 전제다. 현재 구현에 적용되는 설명이 아니다.
 
 MCP 서버는 Claude Code가 로컬로 띄우는 프로세스라 **세션 인증 게이트를 통과하지 않는다**. 그래서:
 
@@ -19,9 +25,9 @@ MCP 서버는 Claude Code가 로컬로 띄우는 프로세스라 **세션 인증
 
 이 메커니즘은 gmail-triage 스킬에서 만들어 2026-11-08 실측 검증됐다 (스냅샷: [reference/connector_relay.py](reference/connector_relay.py)).
 
-## 이 프로젝트: relay를 상시 노출
+## 초기 구상: 훅 relay를 상시 노출
 
-gmail-triage는 relay를 스킬 전용 스크립트로만 쓴다. 이 프로젝트는 같은 메커니즘을 **stdio MCP 서버로 래핑**해 모든 세션·스킬에서 쓸 수 있게 한다:
+gmail-triage는 relay를 스킬 전용 스크립트로만 쓴다. 초기 구상에서는 같은 메커니즘을 **stdio MCP 서버로 래핑**해 모든 세션·스킬에서 쓸 계획이었다:
 
 ```text
 세션(인증 불문) ──mcp__claude-ai-relay__*──▶ relay MCP 서버 (stdio, 로컬)
@@ -33,8 +39,8 @@ gmail-triage는 relay를 스킬 전용 스크립트로만 쓴다. 이 프로젝�
 
 부수 이득: gmail-triage의 relay는 훅 호출이 Claude Code 권한 확인을 거치지 않는 약점이 있었다. MCP 서버로 감싸면 도구 호출이 다시 MCP 권한 체계(allow-list·프롬프트)를 타므로, 스킬 밖에서도 안전하게 상시 노출할 수 있다.
 
-## 전제
+## 초기 구상의 전제
 
-- 머신에 claude.ai OAuth 로그인이 있어야 한다 (자식이 fallback 인증으로 사용).
-- 콜당(또는 배치당) haiku 턴 비용이 미량 발생한다 ("Reply OK" 한 마디).
+- 머신에 claude.ai OAuth 로그인이 있어야 했다 (자식이 fallback 인증으로 사용).
+- 콜당(또는 배치당) haiku 턴 비용이 미량 발생했다 ("Reply OK" 한 마디).
 - upstream이 API env 세션에서도 커넥터를 허용하도록 바뀌면 이 프로젝트는 통째로 불필요해진다.
