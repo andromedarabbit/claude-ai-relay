@@ -15,6 +15,8 @@ retire_when: "goreleaser가 brews 폐기를 철회하거나 formula 생성을 �
 
 # 릴리스 런북 — goreleaser 수동 tap과 이 머신의 토큰 함정
 
+> 이 문서는 v0.2.0 릴리스의 수동 절차와 실측 기록이다. 이후 릴리스는 GitHub Actions로 초안을 만들고 공개 후 tap을 자동 갱신한다. 현재 절차는 [README](../../../README.md#릴리스-운영)를 따른다.
+
 ## Context
 
 v0.2.0 첫 공개 릴리스(2026-11-15, goreleaser 2.20.2)에서 절차 4단계 중 3단계가 문서에 없는 지식이었다. `.goreleaser.yaml:17-18` 주석은 "tap formula는 수동 갱신"이라는 **결정**만 기록하고 **방법**을 적지 않았고, 토큰 충돌과 draft 공개 단계는 어디에도 없었다. 릴리스는 몇 주에 한 번이라 매번 재발견된다.
