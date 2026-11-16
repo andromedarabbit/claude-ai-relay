@@ -5,12 +5,10 @@ problem_type: tooling_decision
 component: development_workflow
 severity: medium
 applies_when:
-  - "새 버전 태그·릴리스 실행 시"
-  - "homebrew tap formula 갱신 시"
-  - "goreleaser 버전을 올려 brews 동작이 바뀌었는지 확인할 때"
+  - "v0.2.0 수동 릴리스 과정과 당시 도구 선택 근거를 확인할 때"
 resolution_type: workflow_improvement
 tags: [goreleaser, homebrew, release, github-releases, tap]
-retire_when: "goreleaser가 brews 폐기를 철회하거나 formula 생성을 자동화하는 안정 후속이 나오면 — goreleaser.com/deprecations#brews 상태를 확인하고 이 문서의 'tap 수동 갱신' 절만 폐기"
+retire_when: "v0.2.0의 수동 릴리스 기록을 보존할 필요가 없어지면"
 ---
 
 # 릴리스 런북 — goreleaser 수동 tap과 이 머신의 토큰 함정
@@ -19,9 +17,9 @@ retire_when: "goreleaser가 brews 폐기를 철회하거나 formula 생성을 �
 
 ## Context
 
-v0.2.0 첫 공개 릴리스(2026-11-15, goreleaser 2.20.2)에서 절차 4단계 중 3단계가 문서에 없는 지식이었다. `.goreleaser.yaml:17-18` 주석은 "tap formula는 수동 갱신"이라는 **결정**만 기록하고 **방법**을 적지 않았고, 토큰 충돌과 draft 공개 단계는 어디에도 없었다. 릴리스는 몇 주에 한 번이라 매번 재발견된다.
+v0.2.0 첫 공개 릴리스(2026-11-15, goreleaser 2.20.2)에서 절차 4단계 중 3단계가 문서에 없는 지식이었다. 당시 `.goreleaser.yaml` 주석은 "tap formula는 수동 갱신"이라는 **결정**만 기록하고 **방법**을 적지 않았고, 토큰 충돌과 draft 공개 단계는 어디에도 없었다. 릴리스는 몇 주에 한 번이라 매번 재발견된다.
 
-## Guidance
+## Guidance — v0.2.0 당시 절차
 
 ```bash
 # 0. main 푸시 상태 확인 (워크트리 세션이면 git push origin HEAD:main)
@@ -39,14 +37,14 @@ tap 갱신: 릴리스 assets의 tar.gz 4개를 내려받아 `shasum -a 256` 계�
 ## Why This Matters
 
 - **GITLAB_TOKEN 충돌**: 이 머신 셸에 `GITLAB_TOKEN`이 상시 노출돼 있다. goreleaser는 토큰을 2개 감지하면 `multiple tokens found, but only one is allowed`로 즉시 실패한다 — `env -u GITLAB_TOKEN` 제거가 매 릴리스마다 필요하고, 이 사실을 모르면 goreleaser 설정 문제로 오진해 시간을 쓴다.
-- **brews 폐기**: goreleaser는 `brews`를 2.10부터 deprecated, 2.16부터 soft-deprecated로 밟아왔고 2.20 기준 `goreleaser check`가 설정을 거부한다(2026-11-15 실측, [deprecations](https://goreleaser.com/deprecations)). 공식 후속 `homebrew_casks`는 macOS·linux 모두 커버하지만 서명·공증·quarantine 개념을 끌어오는 새 스키마다 — 미서명 CLI 바이너리에겐 12줄 고정 formula 수동 관리가 더 저렴해서 기각했다. 결정 근거는 `.goreleaser.yaml:17-18`.
+- **brews 폐기**: goreleaser는 `brews`를 2.10부터 deprecated, 2.16부터 soft-deprecated로 밟아왔고 2.20 기준 `goreleaser check`가 설정을 거부한다(2026-11-15 실측, [deprecations](https://goreleaser.com/deprecations)). 공식 후속 `homebrew_casks`는 macOS·linux 모두 커버하지만 서명·공증·quarantine 개념을 끌어오는 새 스키마다 — 미서명 CLI 바이너리에겐 12줄 고정 formula 수동 관리가 더 저렴해서 기각했다. 당시 결정은 `.goreleaser.yaml`의 주석에 기록돼 있었다.
 - **draft 방치**: `draft: true`는 의도된 설정이지만 publish(`gh release edit --draft=false`)를 잊으면 릴리스는 존재하는데 사용자에게 보이지 않는 상태가 이어진다.
 - **tap 방치 = 배포 실패**: formula를 올리지 않으면 `brew install` 사용자가 구버전 바이너리를 계속 받는다. "릴리스는 했고 배포는 안 한" 상태 — 절차상 tap 갱신은 선택이 아니라 릴리스의 일부다.
 
 ## When to Apply
 
-- 모든 버전 태그 릴리스(전 단계 실행)
-- goreleaser 버전 업그레이드 후: 먼저 brews 상태(goreleaser.com/deprecations#brews) 확인 — 자동화 경로가 부활했으면 retire_when에 따라 이 문서의 tap 절을 폐기한다
+- v0.2.0의 수동 릴리스 절차와 당시 문제를 되짚을 때 참고한다.
+- 현재 릴리스와 tap 갱신에는 이 수동 절차 대신 [README의 릴리스 운영 안내](../../../README.md#릴리스-운영)를 따른다.
 
 ## Examples
 

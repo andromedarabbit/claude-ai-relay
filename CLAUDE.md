@@ -13,7 +13,8 @@ go build .                  # 빌드 (바이너리명 claude-ai-relay)
 go run . selfcheck          # 오프라인 assert 검증 — 네트워크·키체인 불필요, 코드 변경 후 항상 실행
 go run . probe              # e2e: 키체인 토큰 + 네트워크 필요. 발견→선언 매핑→tools/list 대조→읽기 호출 1건
 go run .                    # 무인자 = stdio MCP 서버 실행 (claude mcp add 용도)
-goreleaser release --snapshot --clean   # 교차 컴파일 드래프트 릴리스
+goreleaser release --snapshot --clean   # 로컬 스냅샷 빌드 (릴리스 공개 없음)
+python3 -m unittest discover -s scripts -p 'test_*.py'  # Homebrew 갱신 검증
 ```
 
 go test 파일은 없다 — `selfcheck`가 assert 기반 검증이고, 네트워크·키체인이 필요한 검증은 `probe`가 담당한다.

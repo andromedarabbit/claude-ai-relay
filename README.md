@@ -31,7 +31,7 @@ tar -xzf claude-ai-relay_darwin_arm64.tar.gz
 
 ## 릴리스 운영
 
-버전 태그를 푸시하면 GitHub Actions가 macOS arm64 아카이브와 체크섬이 담긴 릴리스 **초안**을 만든다. 산출물을 확인한 뒤 GitHub에서 직접 공개한다. 공개 이벤트 후 별도 워크플로가 최신 안정 릴리스의 체크섬을 검증하고 Homebrew tap을 갱신한다. 사전 릴리스는 Homebrew에 반영하지 않는다.
+버전 태그를 푸시하면 GitHub Actions가 macOS arm64 아카이브와 체크섬이 담긴 릴리스 **초안**을 만든다. 산출물을 확인한 뒤 GitHub에서 직접 공개한다. 공개 이벤트 후 별도 워크플로가 최신 안정 릴리스의 체크섬을 검증하고 Homebrew tap을 갱신한다. 공개하면 tap 갱신이 자동으로 시작되므로 공개 전에 두 작업의 승인 여부를 확인한다. 사전 릴리스는 Homebrew에 반영하지 않는다.
 
 원본 저장소의 Actions 비밀값 `HOMEBREW_TAP_TOKEN`에는 tap 저장소에만 접근하고 Contents 쓰기 권한을 가진 GitHub App 설치 토큰 또는 세분화 PAT가 필요하다. 릴리스 생성에는 기본 `GITHUB_TOKEN`을 사용한다. 비밀값은 저장소 설정에서 별도 승인 후 등록하고, 만료 또는 유출 시 교체한다.
 
@@ -93,7 +93,10 @@ Anthropic의 **비공개 API**(`api.anthropic.com/v1/mcp_servers`, `mcp-proxy.an
 go build -o claude-ai-relay .   # 의존성 0 (표준 라이브러리만)
 ./claude-ai-relay selfcheck     # 오프라인 검증
 ./claude-ai-relay probe         # 온라인 1회 호출 검증
+python3 -m unittest discover -s scripts -p 'test_*.py'  # Homebrew 갱신 검증
 ```
+
+브랜치 푸시와 PR에서 GitHub Actions CI가 Go 1.22·1.25로 macOS arm64 교차 빌드, 오프라인 selfcheck, Homebrew 갱신 테스트를 실행한다. selfcheck는 Linux 러너에서 실행하며, 키체인과 네트워크가 필요한 `probe`는 CI에서 실행하지 않는다.
 
 설계 근거와 실측 기록: [docs/DECISIONS.md](docs/DECISIONS.md) · [docs/MEASURED-FACTS.md](docs/MEASURED-FACTS.md)
 
