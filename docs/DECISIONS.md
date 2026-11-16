@@ -76,6 +76,10 @@
 
 2026-11-15 승인. 범위: v0.1 단위 1~5(전송·선언·도구 표면·status·패키징), 언어 Go, 계획 파일은 세션 플랜(`~/.claude/plans/linked-tinkering-turtle.md`).
 
+## GitHub Actions CI 구현 시작 (2026-11-16)
+
+승인 범위: 브랜치 푸시·PR의 오프라인 빌드 검증과 기존 워크플로를 이용한 v0.2.1 릴리스 초안 확인. 태그 푸시·공개·tap 쓰기는 각각 별도 승인 후 진행한다.
+
 ## v0.1 완료 (2026-11-15)
 
 단위 1~5 전부 종료 기준 충족 + e2e 시나리오 통과(전송 probe 200, 2커넥터 혼합, 읽기 체인, **쓰기+독립 검증**(아카이빙 재조회), 음성 4종 사전 거부, status 2/17/15, **API env 세션에서 `mcp__claude-ai-relay__*` 실사용**). 산출: `main.go`(Go stdlib만) + `connectors/*.json`(embed) + `.goreleaser.yaml`, 사용자 스코프 등록. 후보: GitHub 공개(module 경로·go install·brew tap), fixed 키 주입(v0.2).
