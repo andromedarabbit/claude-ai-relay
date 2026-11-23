@@ -42,5 +42,5 @@ python3 -m unittest discover -s scripts -p 'test_*.py'  # Homebrew 갱신 검증
 - `docs/solutions/` — 과거 문제 해결 기록(버그·워크플로·도구 결정). 카테고리 디렉터리 + YAML frontmatter(`module`, `tags`, `problem_type`)로 검색. 문서화된 영역 작업 시 참고.
 - `docs/DECISIONS.md`가 게이트다: 코드 작성은 DECISIONS.md에 "구현 시작" 항목이 기록된 뒤에만.
 - `docs/MEASURED-FACTS.md`는 호출 규격의 근거 문서다 — 프로토콜 관련 상수·헤더를 바꿀 때는 실측이 먼저다.
-- `docs/reference/connector_relay.py`는 gmail-triage에서 복사한 원형 스냅샷으로, 수정 대상이 아니다. 훅 relay 방식은 폴백으로 문서화만 한다(D2).
+- 훅 relay 방식은 폴백으로 문서화만 한다(D2). 참조 구현(connector_relay.py)은 사내 gmail-triage 스킬에 있고, 사내 자료라 이 공개 저장소에는 넣지 않는다. 사내 주소·사내 자료·암호화 비밀값은 커밋하지 않는다.
 - 코드·문서 주석은 한국어. 코멘트는 코드가 보여주지 못하는 why만 한 줄.

@@ -2,3 +2,7 @@
 .serena/
 .context/compound-engineering/
 dist/
+# 공개 저장소 — 사내 자료와 암호화 비밀값은 추적하지 않는다
+/docs/reference/
+/secrets/
+/.sops.yaml

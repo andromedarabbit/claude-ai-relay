@@ -17,7 +17,7 @@ relay MCP 서버 프로젝트다. relay 메커니즘은 gmail-triage 스킬에�
 2. docs/RESEARCH.md — OSS 조사 결과
 3. docs/DESIGN-QUESTIONS.md — 설계 주제 목록
 4. docs/MEASURED-FACTS.md — 검증된 실측 수치
-5. docs/reference/connector_relay.py — relay 원형 구현 (참고용 스냅샷)
+5. docs/reference/connector_relay.py — relay 원형 구현 (참고용 스냅샷. 2026-11-23 사내 자료라 공개 저장소에서 제거)
 
 ## 오늘의 주제
 

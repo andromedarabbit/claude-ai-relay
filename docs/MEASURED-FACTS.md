@@ -1,6 +1,6 @@
 # MEASURED-FACTS — gmail-triage에서 검증된 실측
 
-relay 메커니즘의 유일한 실측 근거. gmail-triage 스킬(사내 저장소)에서 2026-11-08 검증, 2026-11-15 스냅샷([reference/connector_relay.py](reference/connector_relay.py)) 기준.
+relay 메커니즘의 유일한 실측 근거. gmail-triage 스킬의 커넥터 relay 원형(connector_relay.py)으로 2026-11-08 검증했고, 2026-11-15 스냅샷 기준이다. 원형 구현은 사내 자료라 이 저장소에는 넣지 않는다.
 
 ## 메커니즘 실측
 

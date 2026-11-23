@@ -1,5 +1,7 @@
 # claude-ai-relay
 
+[![CI](https://github.com/andromedarabbit/claude-ai-relay/actions/workflows/ci.yml/badge.svg)](https://github.com/andromedarabbit/claude-ai-relay/actions/workflows/ci.yml) [![Release](https://github.com/andromedarabbit/claude-ai-relay/actions/workflows/release.yml/badge.svg)](https://github.com/andromedarabbit/claude-ai-relay/actions/workflows/release.yml) [![latest release](https://img.shields.io/github/v/release/andromedarabbit/claude-ai-relay)](https://github.com/andromedarabbit/claude-ai-relay/releases/latest)
+
 claude.ai 커넥터(Gmail·Google Calendar·Slack 등)를 **API 키 인증 세션에서도** 쓸 수 있게 해주는 MCP 서버.
 
 Claude Code 세션의 인증이 `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY`(예: API 게이트웨이·프록시 프로필)일 때 claude.ai 커넥터는 로딩되지 않는다("claude.ai connectors are disabled"). 이 서버는 Claude Code CLI가 쓰는 것과 같은 키체인 OAuth 자격증명으로 Anthropic의 커넥터 프록시 API를 직접 호출해, 어떤 세션에서든 커넥터 도구를 stdio MCP로 노출한다. 별도 자식 프로세스도 훅도 없다.

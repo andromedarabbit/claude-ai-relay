@@ -32,7 +32,7 @@ import (
 
 const (
 	userAgent = "claude-cli/2.1.0 (external, cli)" // shortcut: Cloudflare 1010 차단 시 이 상수만 갱신
-	version   = "0.3.1"                            // 릴리스마다 같이 올린다 — serverInfo·clientInfo에 그대로 노출된다
+	version   = "0.3.2"                            // 릴리스마다 같이 올린다 — serverInfo·clientInfo에 그대로 노출된다
 
 	discoveryURL   = "https://api.anthropic.com/v1/mcp_servers"
 	discoveryBeta  = "mcp-servers-2025-12-04"

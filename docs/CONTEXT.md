@@ -23,7 +23,7 @@ MCP 서버는 Claude Code가 로컬로 띄우는 프로세스라 **세션 인증
 2. 호출하고 싶은 커넥터 도구 호출을 `mcp_tool` 타입 Stop 훅으로 자식에게 주입한다 — 자식 모델은 "Reply OK" 한 마디만 답하고, 턴이 끝나는 Stop 시점에 훅이 커넥터 도구를 설정에 박힌 인자 그대로 실행한다. 모델은 인자를 건드리지 않는다.
 3. 결과는 stream-json의 `hook_response.output`으로 돌아온다.
 
-이 메커니즘은 gmail-triage 스킬에서 만들어 2026-11-08 실측 검증됐다 (스냅샷: [reference/connector_relay.py](reference/connector_relay.py)).
+이 메커니즘은 gmail-triage 스킬에서 만들어 2026-11-08 실측 검증됐다. 원형 구현(connector_relay.py)은 사내 자료라 이 저장소에는 넣지 않는다.
 
 ## 초기 구상: 훅 relay를 상시 노출
 

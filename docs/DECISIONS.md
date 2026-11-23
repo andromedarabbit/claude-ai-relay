@@ -23,7 +23,7 @@
   - 비용: 모델 턴 0 (훅은 배치당 haiku 1턴)
   - 스키마: `tools/list`로 살아 있는 도구 스키마 수신 — 스냅샷 선언·갱신 문제 소멸
   - 배치: 20건 제한·중복 제거 제약 없음 (JSON-RPC id 상관)
-- 폴백: 훅 relay는 공개 문서 기능 위의 경로로 유효하다. 이중 구현은 하지 않고 [reference/connector_relay.py](reference/connector_relay.py)를 참조로 남긴다.
+- 폴백: 훅 relay는 공개 문서 기능 위의 경로로 유효하다. 이중 구현은 하지 않는다. 참조 구현(connector_relay.py)은 사내 gmail-triage 스킬에 있고, 사내 자료라 이 공개 저장소에는 넣지 않는다(2026-11-23 복사본 제거).
 - 리스크: 발견 API와 프록시는 비공개 문서다(공식 CLI와 동일 경로, egzo PR #86이 동일 구조 사용·검증). 수명 리스크는 훅 경로의 "auth 게이트 동작 변경" 리스크와 크기는 비슷하고 성격만 다르다.
 - 구현 제약(실측에서 확인된 호출 규격):
   - 토큰: 키체인 `Claude Code-credentials`는 **다중 항목**이다. `acct`별 조회로 accessToken이 있는 항목을 골라야 한다(기본 조회는 빈 레거시 항목을 잡는다).
@@ -135,3 +135,9 @@ v0.3.0(a94c875) 리뷰(로컬 7개 관점 + codex 교차모델)의 뒤처리. �
 ## 리뷰 후속 수정 구현 시작 (2026-11-23)
 
 승인 범위(사용자 "진행해"): D8 전부, 리뷰가 지적한 문서·주석 정합성(이 파일의 복제 블록 삭제, D5 잔존 주석), selfcheck·probe 보강, README·CLAUDE.md 갱신, v0.3.1 릴리스. main 체크아웃에 다른 작업의 미커밋 변경(`feature/no-cli-refresh`)이 있어 별도 worktree(`fix/review-v0.3.1`)에서 진행한다.
+
+## 공개 저장소 정리 구현 시작 (2026-11-23)
+
+승인 범위(사용자 결정 4건, 모두 추천안): ① 사내 저장소 참조 제거 — 복사해 온 `docs/reference/connector_relay.py`를 추적에서 빼고 사내 주소를 지운다(D2 폴백 문구 수정). ② CI가 쓰지 않는 `secrets/homebrew.enc.yaml`·`.sops.yaml`을 추적에서 뺀다(워크플로는 Actions 비밀값 `HOMEBREW_TAP_TOKEN`을 쓴다). ③ 저장소 보안 설정(시크릿 스캐닝·푸시 보호·Dependabot 보안 업데이트·비공개 취약점 신고)을 켜고 `SECURITY.md`를 추가한다. ④ 저장소 설명·토픽과 README 배지를 넣는다. 함께 v0.3.2 릴리스(`--no-cli-refresh` 포함, 버전 상수 0.3.2)와 merge 끝난 브랜치 정리를 진행한다.
+
+근거: 이력 15개 커밋 전체 스캔에서 토큰·개인키 패턴 0건. 세 파일은 로컬 사본을 지우지 않고 추적에서만 빼고 `.gitignore`에 등록한다.
