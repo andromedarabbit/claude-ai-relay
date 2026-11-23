@@ -16,6 +16,7 @@ package main
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"crypto/rand"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 
 const (
 	userAgent = "claude-cli/2.1.0 (external, cli)" // shortcut: Cloudflare 1010 차단 시 이 상수만 갱신
+	version   = "0.3.1"                            // 릴리스마다 같이 올린다 — serverInfo·clientInfo에 그대로 노출된다
 
 	discoveryURL   = "https://api.anthropic.com/v1/mcp_servers"
 	discoveryBeta  = "mcp-servers-2025-12-04"
@@ -38,6 +40,7 @@ const (
 	proxyBase      = "https://mcp-proxy.anthropic.com/v1/mcp/"
 	keychainSvc    = "Claude Code-credentials"
 	requestTimeout = 30 * time.Second
+	sweepTimeout   = 10 * time.Second // 커넥터당 live 취득 마감 (D8)
 )
 
 // RelayError — kind: usage | auth | upstream | transport | constraint | not_found.
@@ -208,10 +211,30 @@ func withAuthRetry[T any](cred credentials, fn func(credentials) (T, error)) (T,
 	return v, next, err
 }
 
+// withSweepRetry — 전 커넥터 tools/list 스윕용 401 처리. 미연결 커넥터의 401은 토큰 만료와
+// 상태코드가 같아서 withAuthRetry를 타면 커넥터당 claude -p가 한 번씩 뜬다(D8). 발견 호출이
+// 방금 같은 토큰을 검증했으므로 reread(키체인 재독)가 바뀐 토큰을 줄 때만 1회 재시도하고, 같은
+// 토큰이면 업스트림 오류를 그대로 돌려준다 — unconnected에 사유로 남는다.
+func withSweepRetry[T any](cred credentials, reread func() (credentials, error), fn func(credentials) (T, error)) (T, credentials, error) {
+	v, err := fn(cred)
+	if err == nil {
+		return v, cred, nil
+	}
+	if re, ok := err.(*RelayError); !ok || re.Kind != "auth" {
+		return v, cred, err
+	}
+	next, lerr := reread()
+	if lerr != nil || next.AccessToken == cred.AccessToken {
+		return v, cred, err
+	}
+	v, err = fn(next)
+	return v, next, err
+}
+
 // proxyCall — 프록시 MCP 엔드포인트로 JSON-RPC 1건. 401이면 갱신 사다리 후 1회 재시도.
-func proxyCall(cred credentials, mcpsrvID, method string, params any) (json.RawMessage, credentials, error) {
+func proxyCall(ctx context.Context, cred credentials, mcpsrvID, method string, params any) (json.RawMessage, credentials, error) {
 	return withAuthRetry(cred, func(c credentials) (json.RawMessage, error) {
-		return proxyCallOnce(c, mcpsrvID, method, params)
+		return proxyCallOnce(ctx, c, mcpsrvID, method, params)
 	})
 }
 
@@ -221,33 +244,33 @@ var proxySessions = map[string]string{}
 
 var initParams = map[string]any{
 	"protocolVersion": "2025-06-18", "capabilities": map[string]any{},
-	"clientInfo": map[string]any{"name": "claude-ai-relay", "version": "v0.2"},
+	"clientInfo": map[string]any{"name": "claude-ai-relay", "version": version},
 }
 
-func proxyCallOnce(cred credentials, mcpsrvID, method string, params any) (json.RawMessage, error) {
+func proxyCallOnce(ctx context.Context, cred credentials, mcpsrvID, method string, params any) (json.RawMessage, error) {
 	sess, known := proxySessions[mcpsrvID]
 	if !known {
 		sess = newUUID()
-		if _, err := rawProxy(cred, mcpsrvID, sess, "initialize", initParams); err != nil {
+		if _, err := rawProxy(ctx, cred, mcpsrvID, sess, "initialize", initParams); err != nil {
 			return nil, err
 		}
 		proxySessions[mcpsrvID] = sess
 	}
-	raw, err := rawProxy(cred, mcpsrvID, sess, method, params)
+	raw, err := rawProxy(ctx, cred, mcpsrvID, sess, method, params)
 	if err == nil {
 		return raw, nil
 	}
 	// 세션 무효화(만료 등)면 1회 재수립 후 재시도
 	if known && strings.Contains(err.Error(), "initialize request") {
 		delete(proxySessions, mcpsrvID)
-		return proxyCallOnce(cred, mcpsrvID, method, params)
+		return proxyCallOnce(ctx, cred, mcpsrvID, method, params)
 	}
 	return nil, err
 }
 
-func rawProxy(cred credentials, mcpsrvID, sess, method string, params any) (json.RawMessage, error) {
+func rawProxy(ctx context.Context, cred credentials, mcpsrvID, sess, method string, params any) (json.RawMessage, error) {
 	payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
-	req, _ := http.NewRequest("POST", proxyBase+mcpsrvID, bytes.NewReader(payload))
+	req, _ := http.NewRequestWithContext(ctx, "POST", proxyBase+mcpsrvID, bytes.NewReader(payload))
 	req.Header.Set("Authorization", "Bearer "+cred.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
@@ -324,6 +347,19 @@ var readVerbs = map[string]bool{
 	"lookup": true, "discover": true, "whoami": true,
 }
 
+// writeVerbs — 토큰 하나라도 있으면 읽기 동사와 섞여 있어도 쓰기로 판정한다(D8).
+// 실측: claude_data.certify_query가 조직 단위 쓰기인데 query 토큰 하나로 읽기가 됐다.
+var writeVerbs = map[string]bool{
+	"add": true, "apply": true, "approve": true, "archive": true, "assign": true,
+	"cancel": true, "certify": true, "create": true, "delete": true, "disable": true,
+	"edit": true, "enable": true, "execute": true, "forward": true, "insert": true,
+	"invoke": true, "invite": true, "label": true, "mark": true, "modify": true,
+	"move": true, "post": true, "publish": true, "remove": true, "rename": true,
+	"reply": true, "replace": true, "respond": true, "revoke": true, "schedule": true,
+	"send": true, "set": true, "share": true, "submit": true, "trash": true,
+	"trigger": true, "uncertify": true, "update": true, "upload": true, "write": true,
+}
+
 // toolTokens — 도구명을 '_'와 카멜케이스 경계로 토큰 분리(atlassianUserInfo → atlassian·user·info).
 func toolTokens(name string) []string {
 	var toks []string
@@ -346,10 +382,17 @@ func toolTokens(name string) []string {
 	return toks
 }
 
-// classifyTool — 토큰 중 하나라도 읽기 동사와 정확히 일치하면 읽기, 아니면 쓰기(D7).
-// 부분문자열 매칭 금지(update_target의 "get" 함정). 미확실 → 쓰기: 호스트 승인을 거치는 안전한 쪽.
+// classifyTool — 쓰기 동사 토큰이 하나라도 있으면 쓰기(D8), 아니면 읽기 동사 토큰이
+// 하나라도 있으면 읽기, 그 밖은 쓰기(D7). 토큰 정확일치만(부분문자열 금지 — update_target의
+// "get" 함정, list_labels의 labels≠label). 미확실 → 쓰기: 호스트 승인을 거치는 안전한 쪽.
 func classifyTool(name string) string {
-	for _, tok := range toolTokens(name) {
+	toks := toolTokens(name)
+	for _, tok := range toks {
+		if writeVerbs[strings.ToLower(tok)] {
+			return "write"
+		}
+	}
+	for _, tok := range toks {
 		if readVerbs[strings.ToLower(tok)] {
 			return "read"
 		}
@@ -357,16 +400,20 @@ func classifyTool(name string) string {
 	return "write"
 }
 
-// liveTools — tools/list 결과. 스키마 대조(D5)와 search_tools 상세 표시의 원천.
+// liveTools — tools/list 결과. search_tools 상세 표시와 validateArgs의 유일한 원천이다.
 type liveTools struct {
 	schemas      map[string]map[string]any // tool name → inputSchema
 	descriptions map[string]string         // tool name → description
 }
 
-func fetchLiveTools(cred credentials, mcpsrvID string) (liveTools, error) {
-	raw, _, err := proxyCall(cred, mcpsrvID, "tools/list", map[string]any{})
+// fetchLiveTools — 커넥터의 tools/list. 스윕 전용이라 401에 CLI 갱신 사다리를 타지 않는다(D8).
+// 스윕 중 토큰이 바뀌면 바뀐 cred를 돌려주므로 호출자는 다음 커넥터에 이어서 써야 한다.
+func fetchLiveTools(ctx context.Context, cred credentials, mcpsrvID string) (liveTools, credentials, error) {
+	raw, cred, err := withSweepRetry(cred, loadToken, func(c credentials) (json.RawMessage, error) {
+		return proxyCallOnce(ctx, c, mcpsrvID, "tools/list", map[string]any{})
+	})
 	if err != nil {
-		return liveTools{}, err
+		return liveTools{}, cred, err
 	}
 	var res struct {
 		Result struct {
@@ -378,14 +425,14 @@ func fetchLiveTools(cred credentials, mcpsrvID string) (liveTools, error) {
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
-		return liveTools{}, &RelayError{Kind: "upstream", Detail: "tools/list 파싱 실패: " + err.Error()}
+		return liveTools{}, cred, &RelayError{Kind: "upstream", Detail: "tools/list 파싱 실패: " + err.Error()}
 	}
 	lt := liveTools{schemas: map[string]map[string]any{}, descriptions: map[string]string{}}
 	for _, t := range res.Result.Tools {
 		lt.schemas[t.Name] = t.InputSchema
 		lt.descriptions[t.Name] = t.Description
 	}
-	return lt, nil
+	return lt, cred, nil
 }
 
 // --- stdio MCP 서버 (도구 표면 4개, D3·D4) ---
@@ -432,35 +479,43 @@ func bootstrap() error {
 	if err != nil {
 		return err
 	}
-	st := &relayState{cred: cred, connectors: map[string]*conn{}, unconnected: map[string]string{}}
+	st := &relayState{connectors: map[string]*conn{}, unconnected: map[string]string{}}
 	for _, s := range servers {
-		slug := slugify(s.DisplayName)
-		if slug == "" {
-			st.unconnected[s.DisplayName] = "usage: DisplayName이 slug 규약으로 수렴하지 않음"
-			continue
+		if cred, err = st.addServer(cred, s, fetchLiveTools); err != nil {
+			return err
 		}
-		if _, dup := st.connectors[slug]; dup {
-			return usageErr("커넥터 slug 충돌: %s — DisplayName %q와 %q가 규약으로 수렴", slug,
-				st.connectors[slug].displayName, s.DisplayName)
-		}
-		live, err := fetchLiveTools(cred, s.ID)
-		if err != nil {
-			st.unconnected[s.DisplayName] = errSummary(err)
-			continue
-		}
-		st.connectors[slug] = &conn{displayName: s.DisplayName, id: s.ID, live: live}
 	}
-	st.liveToken = cred.AccessToken
+	st.cred, st.liveToken = cred, cred.AccessToken // 스윕 중 바뀐 토큰을 반영한다(D8)
 	state = st
 	return nil
 }
 
-// errSummary — status·probe에 내보낼 오류 요약.
-func errSummary(err error) string {
-	if re, ok := err.(*RelayError); ok {
-		return re.Kind + ": " + re.Detail
+// fetchLive — addServer의 취득 함수. selfcheck가 가짜를 넣어 오프라인으로 검증한다.
+type fetchLive func(ctx context.Context, cred credentials, mcpsrvID string) (liveTools, credentials, error)
+
+// addServer — 발견된 서버 1건을 state에 편입한다. bootstrap·status(실패 재시도)·probe가 쓰는 단일 규칙.
+// 커넥터별 실패는 unconnected로 흡수하고(D7), slug 충돌만 잘못된 커넥터로 라우팅될 수 있어
+// 전역 실패로 돌려준다(D8 — fail fast 유지, 사용자 결정).
+func (st *relayState) addServer(cred credentials, s serverEntry, fetch fetchLive) (credentials, error) {
+	slug := slugify(s.DisplayName)
+	if slug == "" {
+		st.unconnected[s.DisplayName] = "usage: DisplayName이 slug 규약으로 수렴하지 않음"
+		return cred, nil
 	}
-	return err.Error()
+	if prev, dup := st.connectors[slug]; dup {
+		return cred, usageErr("커넥터 slug 충돌: %s — DisplayName %q와 %q가 규약으로 수렴", slug,
+			prev.displayName, s.DisplayName)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), sweepTimeout)
+	defer cancel()
+	live, cred, err := fetch(ctx, cred, s.ID)
+	if err != nil {
+		st.unconnected[s.DisplayName] = err.Error()
+		return cred, nil
+	}
+	st.connectors[slug] = &conn{displayName: s.DisplayName, id: s.ID, live: live}
+	delete(st.unconnected, s.DisplayName)
+	return cred, nil
 }
 
 // findTool — "gmail.list_labels" 또는 bare 이름(전 커넥터에서 유일할 때만).
@@ -498,12 +553,16 @@ func findTool(ref string) (*conn, string, error) {
 func validateArgs(toolRef string, schema map[string]any, args map[string]any) error {
 	props, _ := schema["properties"].(map[string]any)
 	if props == nil {
-		return nil // 업스트림이 스키마를 안 주면 통과 (대조 경보가 이미 표시)
+		return nil // 업스트림이 스키마를 안 주면 통과 — live 스키마가 유일 원천이라 비교할 다른 근거가 없다
 	}
 	required, _ := schema["required"].([]any)
 	for _, r := range required {
-		if _, ok := args[r.(string)]; !ok {
-			return &RelayError{Kind: "constraint", Detail: toolRef + ": 필수 인자 누락 " + r.(string)}
+		name, ok := r.(string) // 타사 커넥터 스키마를 그대로 믿지 않는다 — 단언이 틀리면 stdio 서버가 죽는다
+		if !ok {
+			return &RelayError{Kind: "upstream", Detail: toolRef + ": 스키마 required 항목이 문자열이 아님"}
+		}
+		if _, ok := args[name]; !ok {
+			return &RelayError{Kind: "constraint", Detail: toolRef + ": 필수 인자 누락 " + name}
 		}
 	}
 	for k, v := range args {
@@ -557,7 +616,7 @@ func typeErr(toolRef, key, want string) error {
 
 // callUpstream — 검증 통과 후 실제 호출. 업스트림 content를 그대로 전달한다.
 func callUpstream(c *conn, tool string, args map[string]any) (json.RawMessage, bool, error) {
-	raw, cred, err := proxyCall(state.cred, c.id, "tools/call",
+	raw, cred, err := proxyCall(context.Background(), state.cred, c.id, "tools/call",
 		map[string]any{"name": tool, "arguments": args})
 	if err != nil {
 		return nil, false, err
@@ -582,18 +641,20 @@ func toolSearchTools(args map[string]any) (map[string]any, bool, error) {
 	if query == "" {
 		return nil, false, usageErr("query는 필수")
 	}
+	query = strings.ToLower(query)
 	detail, _ := args["detail"].(string)
 	if detail == "" {
 		detail = "names"
 	}
-	var results []map[string]any
+	results := []map[string]any{}
 	for _, slug := range connectorSlugs() {
 		live := state.connectors[slug].live
 		for _, tool := range sortedToolNames(live) { // live 맵 순회가 랜덤 — 결정적 출력 유지
-			if !strings.Contains(tool, query) {
+			ref := slug + "." + tool
+			if !strings.Contains(strings.ToLower(ref), query) { // 접두사까지 맞춘다 — "gmail"·"calendar" 질의(D8)
 				continue
 			}
-			entry := map[string]any{"tool": slug + "." + tool}
+			entry := map[string]any{"tool": ref, "kind": classifyTool(tool)}
 			if detail == "descriptions" || detail == "schemas" {
 				entry["description"] = live.descriptions[tool]
 			}
@@ -653,8 +714,10 @@ func toolCall(kind string, args map[string]any) (any, bool, error) {
 	return content, isErr, nil // 업스트림 content 배열을 그대로 전달 (본문 무손실)
 }
 
+// toolStatus — 발견을 다시 돌린 뒤, 아직 편입되지 않은 커넥터(실패했거나 새로 연결된 것)의 취득을
+// 재시도한다. bootstrap 캐시는 토큰이 바뀌기 전까지 유지되므로 status가 유일한 회복 경로다(D8).
 func toolStatus() (map[string]any, bool, error) {
-	servers, _, err := withAuthRetry(state.cred, func(c credentials) ([]serverEntry, error) {
+	servers, cred, err := withAuthRetry(state.cred, func(c credentials) ([]serverEntry, error) {
 		return discoverServers(c.AccessToken)
 	})
 	if err != nil {
@@ -662,24 +725,33 @@ func toolStatus() (map[string]any, bool, error) {
 	}
 	sort.Slice(servers, func(i, j int) bool { return servers[i].DisplayName < servers[j].DisplayName })
 	connected := map[string]bool{}
-	var connectors []map[string]any
-	for _, slug := range connectorSlugs() {
-		c := state.connectors[slug]
+	for _, c := range state.connectors {
 		connected[c.displayName] = true
-		read, write := countKinds(c.live)
-		connectors = append(connectors, map[string]any{
-			"slug": slug, "display_name": c.displayName, "mcpsrv_id": c.id,
-			"live_tools": len(c.live.schemas), "read": read, "write": write,
-		})
 	}
-	var unconnected []map[string]any
 	for _, s := range servers {
 		if connected[s.DisplayName] {
 			continue
 		}
-		unconnected = append(unconnected, map[string]any{
-			"display_name": s.DisplayName, "error": state.unconnected[s.DisplayName],
+		if cred, err = state.addServer(cred, s, fetchLiveTools); err != nil {
+			return nil, false, err
+		}
+	}
+	state.cred = cred
+	connectors := []map[string]any{}
+	for _, slug := range connectorSlugs() {
+		c := state.connectors[slug]
+		read, write := countKinds(c.live)
+		connectors = append(connectors, map[string]any{
+			"slug": slug, "display_name": c.displayName, "mcpsrv_id": c.id,
+			"live_tools": len(c.live.schemas), "read": read, "write": write,
+			"read_tools": sortedReadTools(c.live), // 호스트가 승인 없이 실행하는 집합 — 감사 경로(D8)
 		})
+	}
+	unconnected := []map[string]any{}
+	for _, s := range servers {
+		if reason, failed := state.unconnected[s.DisplayName]; failed {
+			unconnected = append(unconnected, map[string]any{"display_name": s.DisplayName, "error": reason})
+		}
 	}
 	return map[string]any{
 		"relay":       map[string]any{"token_account": state.cred.Account, "connectors": len(state.connectors)},
@@ -711,9 +783,9 @@ func toolDescriptors() []map[string]any {
 		return schema
 	}
 	return []map[string]any{
-		{"name": "search_tools", "description": "claude.ai 커넥터 live 도구 검색",
+		{"name": "search_tools", "description": "claude.ai 커넥터 live 도구 검색 (결과에 read/write 분류 포함)",
 			"inputSchema": argsSchema(map[string]any{
-				"query":  map[string]any{"type": "string", "description": "도구명 부분일치"},
+				"query":  map[string]any{"type": "string", "description": "도구명·커넥터 접두사 부분일치 (대소문자 무시, '.' = 전체)"},
 				"detail": map[string]any{"type": "string", "enum": []string{"names", "descriptions", "schemas"}, "description": "기본 names"},
 			}, "query")},
 		{"name": "call_read", "description": "읽기로 분류된 커넥터 도구 실행",
@@ -726,7 +798,7 @@ func toolDescriptors() []map[string]any {
 				"tool": map[string]any{"type": "string", "description": "예: google_calendar.create_event"},
 				"args": map[string]any{"type": "object"},
 			}, "tool")},
-		{"name": "status", "description": "커넥터 상태·미연결 커넥터 목록",
+		{"name": "status", "description": "커넥터 상태·미연결 커넥터 목록. 실패했던 커넥터의 취득을 재시도하고 읽기로 분류된 도구명(read_tools)도 싣는다",
 			"inputSchema": argsSchema(map[string]any{})},
 	}
 }
@@ -773,7 +845,7 @@ func dispatch(line []byte) []byte {
 		}
 		return rpcResult(msg.ID, map[string]any{
 			"protocolVersion": proto, "capabilities": map[string]any{"tools": map[string]any{}},
-			"serverInfo": map[string]any{"name": "claude-ai-relay", "version": "0.1.0"},
+			"serverInfo": map[string]any{"name": "claude-ai-relay", "version": version},
 		})
 	case "ping":
 		return rpcResult(msg.ID, map[string]any{})
@@ -846,7 +918,8 @@ func rpcError(id json.RawMessage, code int, msg string) []byte {
 // --- 서브커맨드 ---
 
 // cmdProbe — 토큰·발견·전 커넥터 live 취득·분류·읽기 호출을 한 번에 검증한다.
-// 커넥터별 tools/list 실패(미연결 401 등)는 흡수하고 경고만 출력한다(D7).
+// bootstrap과 같은 편입 규칙(addServer)으로 스윕한다 — 커넥터별 실패는 흡수하고 경고만 출력하되(D7),
+// slug 충돌이면 bootstrap처럼 실패한다(D8). 커넥터별 소요 시간과 읽기 분류 도구명을 함께 찍는다.
 func cmdProbe() int {
 	cred, err := loadToken()
 	if err != nil {
@@ -861,18 +934,26 @@ func cmdProbe() int {
 		return 3
 	}
 	fmt.Printf("relay=ok acct=%s discovered=%d\n", cred.Account, len(servers))
+	st := &relayState{cred: cred, connectors: map[string]*conn{}, unconnected: map[string]string{}}
 	gmailRead, gmailID := "", "" // gmail.list_labels 우선
 	fallbackRead, fallbackID := "", ""
 	for _, s := range servers {
-		live, err := fetchLiveTools(cred, s.ID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s: tools/list 실패(흡수) — %s\n", s.DisplayName, errSummary(err))
+		slug := slugify(s.DisplayName)
+		started := time.Now()
+		if cred, err = st.addServer(cred, s, fetchLiveTools); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+		added, ok := st.connectors[slug]
+		if !ok {
+			fmt.Fprintf(os.Stderr, "%s: tools/list 실패(흡수) — %s\n", s.DisplayName, st.unconnected[s.DisplayName])
 			continue
 		}
-		read, write := countKinds(live)
-		fmt.Printf("%s (%s): tools=%d read=%d write=%d\n",
-			s.DisplayName, slugify(s.DisplayName), len(live.schemas), read, write)
-		reads := sortedReadTools(live)
+		read, write := countKinds(added.live)
+		fmt.Printf("%s (%s): tools=%d read=%d write=%d %s\n", s.DisplayName, slug,
+			len(added.live.schemas), read, write, time.Since(started).Round(time.Millisecond))
+		reads := sortedReadTools(added.live)
+		fmt.Printf("  읽기 분류: %s\n", strings.Join(reads, ", "))
 		if s.DisplayName == "Gmail" {
 			gmailID = s.ID
 			for _, t := range reads {
@@ -907,7 +988,7 @@ func cmdProbe() int {
 
 // callEmptyArg — 빈 인자 tools/call 1건. 첫 text 블록 안 JSON의 첫 배열 길이를 돌려준다.
 func callEmptyArg(cred credentials, mcpsrvID, tool string) (int, error) {
-	raw, _, err := proxyCall(cred, mcpsrvID, "tools/call", map[string]any{"name": tool, "arguments": map[string]any{}})
+	raw, _, err := proxyCall(context.Background(), cred, mcpsrvID, "tools/call", map[string]any{"name": tool, "arguments": map[string]any{}})
 	if err != nil {
 		return 0, err
 	}
@@ -995,14 +1076,17 @@ func cmdSelfcheck() int {
 	}
 	// 이름 규약: 읽기/쓰기 분류 경계 사례
 	for _, t := range []string{"list_events", "search_threads", "read_doc", "download_file_content",
-		"whoami", "capabilities_discover", "get_event"} {
+		"whoami", "capabilities_discover", "get_event", "list_labels", "get_certified_query_source",
+		"getHTTPResponse"} {
 		if err := assert(classifyTool(t) == "read", "분류 읽기: "+t+" (실제 "+classifyTool(t)+")"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
 		}
 	}
 	for _, t := range []string{"unlabel_message", "suggest_time", "export_artifact", "set_status",
-		"update_target", "follow_meeting_transcript", "atlassianUserInfo"} {
+		"update_target", "follow_meeting_transcript", "atlassianUserInfo", "certify_query",
+		"uncertify_query", "set_certified_query_source", "find_or_create_contact", "search_and_replace",
+		"capabilities_invoke_read", "setHTTPCode"} {
 		if err := assert(classifyTool(t) == "write", "분류 쓰기: "+t+" (실제 "+classifyTool(t)+")"); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return 2
@@ -1047,7 +1131,94 @@ func cmdSelfcheck() int {
 		fmt.Fprintln(os.Stderr, fmt.Sprintf("selfcheck 실패: countKinds read=%d write=%d", read, write))
 		return 2
 	}
-	fmt.Println("selfcheck=ok (키체인 파서·env 제거·SSE 파서·규격 상수·uuid·slug·분류·findTool·kind 안내·countKinds)")
+	fail := func(format string, a ...any) int {
+		fmt.Fprintf(os.Stderr, "selfcheck 실패: "+format+"\n", a...)
+		return 2
+	}
+	// search_tools — 합성 state로 결정적 정렬·kind·접두사 질의·빈 결과 검증 (D8)
+	search := func(args map[string]any) ([]map[string]any, error) {
+		res, _, err := toolSearchTools(args)
+		tools, _ := res["tools"].([]map[string]any)
+		return tools, err
+	}
+	if got, _ := search(map[string]any{"query": "list"}); len(got) != 2 || got[0]["tool"] != "gcal.list_events" ||
+		got[1]["tool"] != "gmail.list_labels" || got[0]["kind"] != "read" {
+		return fail("search_tools 정렬·kind: %v", got)
+	}
+	if got, _ := search(map[string]any{"query": "GMAIL"}); len(got) != 2 || got[0]["tool"] != "gmail.get_event" ||
+		got[1]["tool"] != "gmail.list_labels" {
+		return fail("search_tools 접두사 질의: %v", got)
+	}
+	if got, _ := search(map[string]any{"query": "zzz"}); got == nil || len(got) != 0 {
+		return fail("search_tools 빈 결과는 null이 아니라 []: %v", got)
+	}
+	if _, err := search(map[string]any{}); err == nil {
+		return fail("search_tools query 누락 감지")
+	}
+	// addServer — 편입 규칙: 성공·실패 흡수·빈 slug·slug 충돌(전역 실패)·재시도 회복 (D7·D8)
+	fake := func(failFetch bool, names ...string) fetchLive {
+		return func(_ context.Context, cred credentials, _ string) (liveTools, credentials, error) {
+			if failFetch {
+				return liveTools{}, cred, &RelayError{Kind: "auth", Detail: "401"}
+			}
+			lt := liveTools{schemas: map[string]map[string]any{}, descriptions: map[string]string{}}
+			for _, n := range names {
+				lt.schemas[n] = map[string]any{}
+			}
+			return lt, cred, nil
+		}
+	}
+	st := &relayState{connectors: map[string]*conn{}, unconnected: map[string]string{}}
+	cred, aerr := st.addServer(credentials{AccessToken: "t"}, serverEntry{ID: "g", DisplayName: "Gmail"}, fake(false, "list_labels"))
+	if aerr != nil || st.connectors["gmail"] == nil || len(st.unconnected) != 0 {
+		return fail("addServer 성공 편입: %v %v", aerr, st.unconnected)
+	}
+	if _, aerr = st.addServer(cred, serverEntry{ID: "z", DisplayName: "Zapier"}, fake(true)); aerr != nil ||
+		st.connectors["zapier"] != nil || !strings.Contains(st.unconnected["Zapier"], "auth: 401") {
+		return fail("addServer 실패 흡수: %v %v", aerr, st.unconnected)
+	}
+	if _, aerr = st.addServer(cred, serverEntry{ID: "x", DisplayName: "!!!"}, fake(false)); aerr != nil ||
+		!strings.Contains(st.unconnected["!!!"], "slug") {
+		return fail("addServer 빈 slug 흡수: %v %v", aerr, st.unconnected)
+	}
+	if _, aerr = st.addServer(cred, serverEntry{ID: "c", DisplayName: "Google Calendar"}, fake(false, "list_events")); aerr != nil {
+		return fail("addServer slug 정상 편입: %v", aerr)
+	}
+	if _, aerr = st.addServer(cred, serverEntry{ID: "c2", DisplayName: "Google, Calendar"}, fake(false, "list_events")); aerr == nil ||
+		!strings.Contains(aerr.Error(), "slug 충돌") || st.connectors["google_calendar"].id != "c" {
+		return fail("addServer slug 충돌은 전역 실패: %v", aerr)
+	}
+	if _, aerr = st.addServer(cred, serverEntry{ID: "z", DisplayName: "Zapier"}, fake(false, "list_events")); aerr != nil ||
+		st.connectors["zapier"] == nil || len(st.unconnected) != 1 {
+		return fail("addServer 재시도 회복: %v %v", aerr, st.unconnected)
+	}
+	// withSweepRetry — 같은 토큰이면 재시도 없이 업스트림 오류를, 바뀐 토큰이면 1회 재시도 (D8)
+	sweepCalls := 0
+	sweep401 := func(credentials) (int, error) { sweepCalls++; return 0, &RelayError{Kind: "auth", Detail: "401"} }
+	reread := func(tok string) func() (credentials, error) {
+		return func() (credentials, error) { return credentials{AccessToken: tok}, nil }
+	}
+	stale := credentials{AccessToken: "t"}
+	if _, _, serr := withSweepRetry(stale, reread("t"), sweep401); serr == nil || sweepCalls != 1 {
+		return fail("withSweepRetry 같은 토큰에는 재시도하지 않는다 (calls=%d, err=%v)", sweepCalls, serr)
+	}
+	sweepCalls = 0
+	_, got, serr := withSweepRetry(stale, reread("t2"), func(c credentials) (int, error) {
+		sweepCalls++
+		if c.AccessToken != "t2" {
+			return 0, &RelayError{Kind: "auth", Detail: "옛 토큰"}
+		}
+		return 7, nil
+	})
+	if serr != nil || sweepCalls != 2 || got.AccessToken != "t2" {
+		return fail("withSweepRetry 바뀐 토큰으로 1회 재시도 (calls=%d, err=%v)", sweepCalls, serr)
+	}
+	// validateArgs — required가 문자열이 아닌 타사 스키마는 거부한다 (단언 패닉 방지)
+	if verr := validateArgs("x.y", map[string]any{"properties": map[string]any{}, "required": []any{1}},
+		map[string]any{}); verr == nil || !strings.Contains(verr.Error(), "문자열이 아님") {
+		return fail("validateArgs 비문자열 required: %v", verr)
+	}
+	fmt.Println("selfcheck=ok (키체인 파서·env 제거·SSE 파서·규격 상수·uuid·slug·분류·findTool·kind 안내·countKinds·search_tools·addServer·withSweepRetry·validateArgs)")
 	return 0
 }
 
