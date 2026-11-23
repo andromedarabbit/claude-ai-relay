@@ -126,3 +126,7 @@
 ## 도구 표면 재설계 구현 시작 (2026-11-23)
 
 승인 범위: D7 — 선언 허용목록 제거, 발견된 전체 커넥터·live 도구 노출, 이름 컨벤션 read/write 분류(미확실→쓰기), 커넥터 slug 규약, status·probe·selfcheck 재작성, `connectors/` 삭제, README·CLAUDE.md 정정. 릴리스·버전업은 별도 승인. 계획 파일: `~/.claude/plans/connector-deep-ember.md`
+
+## 무인 조회 인증 모드 구현 시작
+
+사용자 승인 범위: `--no-cli-refresh`로 실행한 stdio 프로세스에서 키체인은 다시 읽되, 토큰이 바뀌지 않았으면 `auth` 오류를 반환한다. 이 모드에서는 갱신용 모델 호출을 시작하지 않는다. 기존 등록의 무인자 실행과 직접 refresh 금지는 그대로다.

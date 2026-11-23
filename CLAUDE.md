@@ -11,13 +11,14 @@ claude.ai 커넥터(Gmail 등)를 API 인증(`ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_A
 ```bash
 go build .                  # 빌드 (바이너리명 claude-ai-relay)
 go run . selfcheck          # 오프라인 assert 검증 — 네트워크·키체인 불필요, 코드 변경 후 항상 실행
+go test ./...               # 대역 프로세스로 인증 갱신 분기 검증
 go run . probe              # e2e: 키체인 토큰 + 네트워크 필요. 발견→전 커넥터 live 취득→분류→읽기 호출 1건
 go run .                    # 무인자 = stdio MCP 서버 실행 (claude mcp add 용도)
 goreleaser release --snapshot --clean   # 로컬 스냅샷 빌드 (릴리스 공개 없음)
 python3 -m unittest discover -s scripts -p 'test_*.py'  # Homebrew 갱신 검증
 ```
 
-go test 파일은 없다 — `selfcheck`가 assert 기반 검증이고, 네트워크·키체인이 필요한 검증은 `probe`가 담당한다.
+`selfcheck`는 오프라인 assert 검증이고, `go test`는 인증 실패에서 CLI를 실행하는지 대역으로 확인한다. 네트워크와 키체인이 필요한 검증은 `probe`가 담당한다.
 
 ## 아키텍처 (main.go 단일 파일)
 

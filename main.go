@@ -280,10 +280,15 @@ func parseSSEJSON(body []byte) (json.RawMessage, error) {
 	return nil, &RelayError{Kind: "upstream", Detail: "응답에서 JSON 페이로드를 찾지 못함"}
 }
 
-// ensureToken — 401 사다리: ① 키체인 재독(외부 갱신 흡수) ② CLI 트리거 갱신 ③ 재독 → 실패 시 auth 오류.
+var noCLIRefresh bool
+
+// ensureToken — 401 사다리: 키체인 재독 → CLI 갱신 허용 시에만 갱신 트리거.
 func ensureToken(stale credentials) (credentials, error) {
 	if cred, err := loadToken(); err == nil && cred.AccessToken != stale.AccessToken {
 		return cred, nil
+	}
+	if noCLIRefresh {
+		return credentials{}, &RelayError{Kind: "auth", Detail: "토큰이 만료되었습니다 — Claude Code에서 로그인한 뒤 재시도"}
 	}
 	if err := refreshViaCLI(); err != nil {
 		return credentials{}, &RelayError{Kind: "auth", Detail: "CLI 갱신 실패: " + err.Error() + " — claude login 후 재시도"}
@@ -1058,6 +1063,10 @@ func main() {
 	}
 	var code int
 	switch os.Args[1] {
+	case "--no-cli-refresh":
+		noCLIRefresh = true
+		serve()
+		return
 	case "probe":
 		code = cmdProbe()
 	case "selfcheck":

@@ -54,6 +54,8 @@ claude mcp add --scope user claude-ai-relay -- claude-ai-relay
 
 첫 호출 시 macOS 키체인 접근 승인 프롬프트가 한 번 뜬다 (`security` CLI가 `Claude Code-credentials`를 읽는다).
 
+모델을 호출하면 안 되는 스크립트에서는 `claude-ai-relay --no-cli-refresh`를 stdio 서버로 실행한다. 이미 갱신된 토큰은 키체인에서 다시 읽지만, 갱신되지 않았으면 `auth` 오류를 돌려주며 `claude -p`를 실행하지 않는다. 읽기·쓰기 분류는 기존과 같으므로 조회 스크립트는 `call_read`만 사용한다.
+
 ## 커넥터 노출 규칙
 
 claude.ai에 연결된 **모든 커넥터의 모든 live 도구**가 노출된다 (docs/DECISIONS.md D7). 노출 범위 통제는 호스트 Claude Code 권한 설정이 담당한다 — `call_read`는 자동 허용, `call_write`는 매번 확인이 기본 권장 설정이다.
