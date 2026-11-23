@@ -88,4 +88,15 @@ relay 메커니즘의 유일한 실측 근거. gmail-triage 스킬(사내 저장
 | 미연결 커넥터 | Zapier·Sentry·Miro·Granola·Figma는 프록시 tools/list조차 401 (커넥터별 OAuth 미연결) — 선언 불가, status 미선언로 표시 |
 | 커넥터 12개 | Claude Data 3, Claude Docs 2, Meetings 5, Slides 3, Docs 1, Sheets 2, Slack 12, Zoom 12, Drive 9, Atlassian Rovo 26 도구 읽기 선언 — 전부 live 목록과 대조 일치 |
 | fixed 주입 | v0.2부터 호출자가 fixed 키를 생략하면 relay가 주입 (다른 값 실으면 여전히 `constraint` 거부) |
-| 선언 스캔 | `~/.config/claude-ai-relay/connectors/*.json` 오버레이 — 내장 선언을 같은 name으로 덮어쓰거나 신규 추가. macOS `os.UserConfigDir`은 `~/Library/Application Support`라 `~/.config`로 규약 고정 |
+| 선언 스캔 | `~/.config/claude-ai-relay/connectors/*.json` 오버레이 — 내장 선언을 같은 name으로 덮어쓰거나 신규 추가. macOS `os.UserConfigDir`은 `~/Library/Application Support`라 `~/.config`로 규약 고정 — D7(2026-11-23)에서 선언 시스템과 함께 삭제됨 |
+
+## 2026-11-23 실측 — v0.3.0 리뷰 후속 (D8)
+
+| 항목 | 값 |
+|---|---|
+| 첫 도구 호출(콜드 bootstrap) | v0.3.0 41.1초 → 스윕 사다리 억제 후 약 16초. 줄어든 26초가 미연결 커넥터 5개가 유발한 `claude -p` 스폰 5회 |
+| probe 전체 | 43.6초 → 17.4초 |
+| 커넥터당 live 취득 | 0.7~1.8초(initialize + tools/list 2왕복, 직렬) — 연결 12개 합산 약 13초 |
+| 미연결 커넥터의 401 본문 | `{"type":"error","error":{"type":"authentication_error","message":"MCP server requires authentication but no OAuth token is configured.","details":{"error_code":"mcp_unauthorized_no_token"}}}` — 토큰 만료 401과 상태코드·type이 같다 |
+| 읽기 분류 live 감사 | 176도구 중 읽기로 분류된 88개를 설명까지 대조. `claude_data.certify_query`·`set_certified_query_source`·`uncertify_query`가 조직 전체 대상 쓰기였다(전원 설치·인증 부여·철회). 쓰기 동사 선검사 후 읽기 84 / 쓰기 92 — 바뀐 4건은 그 3건과 `zoom_for_claude.capabilities_invoke_read` |
+| status 재시도 비용 | 미연결 5건을 다시 시도하는 웜 `status` 2.9초 — 건당 401 1왕복 + 키체인 재독 1회 |
