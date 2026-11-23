@@ -100,3 +100,7 @@ python3 -m unittest discover -s scripts -p 'test_*.py'  # Homebrew 갱신 검증
 ## 라이선스
 
 [MIT](LICENSE)
+
+## 참고 자료
+
+- [codex-connectors-mcp](https://github.com/wileai/codex-connectors-mcp) — Codex에서 사용 가능한 ChatGPT 연결 앱을 다른 MCP 호스트에서 쓸 수 있게 해주는 비공식 브리지. Codex의 실험적 app-server 인터페이스에 의존하며, ChatGPT에 연결된 모든 앱이 Codex에서도 지원되는 것은 아니다.
