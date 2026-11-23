@@ -47,40 +47,25 @@ claude mcp add --scope user claude-ai-relay -- claude-ai-relay
 
 | 도구 | 설명 |
 |---|---|
-| `search_tools` | 선언된 커넥터 도구 검색 (`detail: names·descriptions·schemas`) |
-| `call_read` | 읽기로 선언된 도구 실행 (예: `gmail.search_threads`) |
-| `call_write` | 쓰기로 선언된 도구 실행 — 제약은 relay가 사전 검증 |
-| `status` | 커넥터 상태·선언-실제 불일치·미선언 커넥터 목록 |
+| `search_tools` | 커넥터 live 도구 검색 (`detail: names·descriptions·schemas`) |
+| `call_read` | 읽기로 분류된 도구 실행 (예: `gmail.search_threads`) |
+| `call_write` | 쓰기로 분류된 도구 실행 — 호스트 승인 대상 |
+| `status` | 커넥터 상태·미연결 커넥터 목록 |
 
 첫 호출 시 macOS 키체인 접근 승인 프롬프트가 한 번 뜬다 (`security` CLI가 `Claude Code-credentials`를 읽는다).
 
-## 내장 커넥터 (v0.2)
+## 커넥터 노출 규칙
 
-Gmail(읽기 4·쓰기 1), Google Calendar — 쓰기는 `unlabel_message`(INBOX 아카이빙) 하나뿐이고 허용값이 선언으로 고정된다. 그 외 읽기 전용 10종: Slack, Google Drive, Atlassian Rovo, Zoom, Meetings, Claude Data, Claude Docs, Google Docs/Sheets/Slides.
+claude.ai에 연결된 **모든 커넥터의 모든 live 도구**가 노출된다 (docs/DECISIONS.md D7). 노출 범위 통제는 호스트 Claude Code 권한 설정이 담당한다 — `call_read`는 자동 허용, `call_write`는 매번 확인이 기본 권장 설정이다.
 
-## 선언 커스터마이징
-
-커넥터 노출은 `connectors/*.json` 선언이 결정한다 (바이너리에 내장). 재빌드 없이 추가·덮어쓰기하려면:
-
-```bash
-mkdir -p ~/.config/claude-ai-relay/connectors
-cat > ~/.config/claude-ai-relay/connectors/notion.json <<'JSON'
-{
-  "name": "notion",
-  "match": "Notion",
-  "read": ["search", "get_page"],
-  "write": {}
-}
-JSON
-```
-
-`match`는 claude.ai 커넥터 표시명과 정확히 일치해야 한다 (`status` 도구의 `undeclared` 목록에서 확인). 읽기·쓰기 분류와 쓰기 제약 문법은 [docs/DECISIONS.md](docs/DECISIONS.md) 참고.
+- **커넥터 접두사**: 커넥터 표시명을 규약으로 변환한다 — 소문자화 + 알파벳·숫자 외 문자를 `_` 하나로 (예: `Gmail`→`gmail`, `Google Calendar`→`google_calendar`, `Zoom for Claude`→`zoom_for_claude`). 축약 테이블은 없다. claude.ai 측 표시명이 바뀌면 접두사도 같이 바뀐다.
+- **읽기/쓰기 분류**: 도구명 토큰(get·list·search·find·read·describe·download·query·fetch·lookup·discover·whoami)이 하나라도 있으면 읽기, 아니면 쓰기. 판단이 서지 않으면 쓰기로 편향한다 — `suggest_time`·`export_*`·`token_status` 같은 도구는 쓰기라 `call_write`로 호출해야 하고 호스트 승인을 거친다. 읽기 동사 목록 확장은 코드 수정이 필요하다(별도 지시 시).
+- **호환성**: 예전 선언 방식의 `gcal.list_events`·`gdrive.*` 접두사는 `google_calendar.list_events`·`google_drive.*`로 바뀌었다. `gmail`·`slack`·`meetings`·`claude_data`·`claude_docs`는 그대로다. 호스트 권한 설정(`mcp__claude-ai-relay__call_read/write`)은 MCP 도구명 단위라 영향 없다.
 
 ## 안전 모델
 
-- **선언된 도구만 노출** — 발견된 17개 커넥터 중 선언 없는 것은 `status`에만 표시된다
-- 쓰기는 선언에 `fixed`(허용값 고정)·`types`(타입 검사) 제약을 명시해야 하고, relay가 호출 전에 검증한다
-- 커넥터별 OAuth가 필요한 도구는 401로 구분된다 (`status`의 미선언 목록 = 미연결 커넥터)
+- **전체 노출, 호스트 통제** — 발견된 커넥터의 도구를 가리지 않는다. 통제는 호스트 권한 설정(call_read 자동허용 / call_write 매번 확인)에서 한다
+- **미연결 커넥터 흡수** — 커넥터별 OAuth가 필요한 도구는 tools/list가 401로 실패해도 전체가 죽지 않고 `status`의 `unconnected`로 표시된다
 - relay는 토큰을 직접 refresh하지 않는다. 만료 시 CLI 갱신을 트리거할 뿐 (자세한 이유는 [docs/MEASURED-FACTS.md](docs/MEASURED-FACTS.md) — refresh 회전이 기존 자격증명을 즉시 폐기하기 때문)
 
 ## 제약

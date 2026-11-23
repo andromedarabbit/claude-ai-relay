@@ -1,8 +1,0 @@
-{
-  "name": "gdocs",
-  "match": "Google Docs",
-  "read": [
-    "read_doc"
-  ],
-  "write": {}
-}

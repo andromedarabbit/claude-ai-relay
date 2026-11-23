@@ -7,9 +7,9 @@
 // 토큰 갱신은 CLI 트리거만 한다 — 직접 refresh는 회전으로 구 at·rt를 즉시
 // revoke해 CLI 자격증명 체인을 파괴한다(2026-11-15 실측).
 //
-// 서브커맨드 (v0.1 단위 1 — serve·선언·도구 표면은 후속 단위):
+// 서브커맨드:
 //
-//	claude-ai-relay probe       list_labels 1건으로 relay 사용 가능 여부 확인
+//	claude-ai-relay probe       발견→live 취득→읽기 호출 1건으로 relay 사용 가능 여부 확인
 //	claude-ai-relay selfcheck   오프라인 assert (네트워크·키체인 불필요)
 package main
 
@@ -17,15 +17,12 @@ import (
 	"bufio"
 	"bytes"
 	"crypto/rand"
-	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"reflect"
 	"regexp"
 	"sort"
 	"strings"
@@ -43,7 +40,7 @@ const (
 	requestTimeout = 30 * time.Second
 )
 
-// RelayError — kind: usage | auth | upstream | transport.
+// RelayError — kind: usage | auth | upstream | transport | constraint | not_found.
 type RelayError struct {
 	Kind   string
 	Detail string
@@ -297,111 +294,67 @@ func ensureToken(stale credentials) (credentials, error) {
 	return credentials{}, &RelayError{Kind: "auth", Detail: "갱신 후에도 토큰 없음 — claude login 후 재시도"}
 }
 
-// --- 선언 (D1: 커넥터 추가 = connectors/*.json 추가) ---
+// --- 이름 규약 (D7: 선언 없는 커넥터 접두사와 읽기/쓰기 분류) ---
 
-//go:embed connectors/*.json
-var declarationFS embed.FS
-
-type WriteConstraint struct {
-	Fixed map[string]any    `json:"fixed"` // 값과 완전일치해야 하는 인자
-	Types map[string]string `json:"types"` // 타입만 검사하는 인자 ("string")
+// slugify — 발견 DisplayName → 도구 접두사 slug. 규약 고정, 축약 테이블 없음(D7).
+// 비알파벳 연속·앞뒤는 '_' 하나로 수렴한다.
+func slugify(display string) string {
+	s := strings.ToLower(display)
+	var b strings.Builder
+	pending := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') {
+			if pending && b.Len() > 0 {
+				b.WriteByte('_')
+			}
+			pending = false
+			b.WriteByte(c)
+		} else {
+			pending = true
+		}
+	}
+	return b.String()
 }
 
-type Declaration struct {
-	Name  string                     `json:"name"`
-	Match string                     `json:"match"` // 발견 API의 display_name과 대조
-	Read  []string                   `json:"read"`
-	Write map[string]WriteConstraint `json:"write"`
+// readVerbs — 읽기로 분류할 동사 토큰. 확장은 코드 수정(별도 지시 시, D7).
+var readVerbs = map[string]bool{
+	"get": true, "list": true, "search": true, "find": true, "read": true,
+	"describe": true, "download": true, "query": true, "fetch": true,
+	"lookup": true, "discover": true, "whoami": true,
 }
 
-// parseDeclaration — 선언 1건 구조 검증 후 적재. 같은 name이면 나중 것이 덮어쓴다(스캔 오버레이용).
-func parseDeclaration(source string, raw []byte, decls map[string]Declaration) error {
-	var d Declaration
-	if err := json.Unmarshal(raw, &d); err != nil {
-		return usageErr("%s 파싱 실패: %v", source, err)
-	}
-	if d.Name == "" || d.Match == "" {
-		return usageErr("%s: name과 match는 필수", source)
-	}
-	for _, t := range d.Read {
-		if _, dup := d.Write[t]; dup {
-			return usageErr("%s: %s가 read·write 양쪽에 선언됨", source, t)
-		}
-	}
-	if _, dup := decls[d.Name]; dup {
-		fmt.Fprintf(os.Stderr, "relay: 선언 %s를 %s이(가) 덮어씀\n", d.Name, source)
-	}
-	decls[d.Name] = d
-	return nil
-}
-
-// loadDeclarations — 내장 선언 + ~/.config/claude-ai-relay/connectors/*.json 오버레이.
-// 재빌드 없이 선언 추가·수정을 허용한다 (규약 고정 경로, 설정 변수 없음).
-func loadDeclarations() (map[string]Declaration, error) {
-	entries, err := declarationFS.ReadDir("connectors")
-	if err != nil {
-		return nil, usageErr("connectors 디렉터리 읽기 실패: %v", err)
-	}
-	decls := map[string]Declaration{}
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), ".json") {
-			continue
-		}
-		raw, err := declarationFS.ReadFile("connectors/" + e.Name())
-		if err != nil {
-			return nil, usageErr("%s 읽기 실패: %v", e.Name(), err)
-		}
-		if err := parseDeclaration("내장:"+e.Name(), raw, decls); err != nil {
-			return nil, err
-		}
-	}
-	// 스캔 경로는 ~/.config/claude-ai-relay/connectors 로 규약 고정 (플랫폼 무관 단일 경로)
-	home, herr := os.UserHomeDir()
-	cfgRoot := os.Getenv("XDG_CONFIG_HOME")
-	if cfgRoot == "" && herr == nil {
-		cfgRoot = filepath.Join(home, ".config")
-	}
-	if cfgRoot != "" {
-		scan := filepath.Join(cfgRoot, "claude-ai-relay", "connectors")
-		if files, err := os.ReadDir(scan); err == nil {
-			for _, f := range files {
-				if f.IsDir() || !strings.HasSuffix(f.Name(), ".json") {
-					continue
-				}
-				raw, err := os.ReadFile(filepath.Join(scan, f.Name()))
-				if err != nil {
-					return nil, usageErr("%s 읽기 실패: %v", f.Name(), err)
-				}
-				if err := parseDeclaration("스캔:"+f.Name(), raw, decls); err != nil {
-					return nil, err // 스캔 선언이 깨지면 fail fast — 조용히 무시하지 않는다
-				}
+// toolTokens — 도구명을 '_'와 카멜케이스 경계로 토큰 분리(atlassianUserInfo → atlassian·user·info).
+func toolTokens(name string) []string {
+	var toks []string
+	for _, part := range strings.Split(name, "_") {
+		start := 0
+		for i := 1; i < len(part); i++ {
+			c, p := part[i], part[i-1]
+			up, prevUp := c >= 'A' && c <= 'Z', p >= 'A' && p <= 'Z'
+			lo := c >= 'a' && c <= 'z'
+			if up && !prevUp { // 소문자→대문자 경계 (userInfo의 U)
+				toks = append(toks, part[start:i])
+				start = i
+			} else if lo && prevUp && i-1 > start { // 대문자 연쇄 뒤 소문자 (HTTPServer의 S)
+				toks = append(toks, part[start:i-1])
+				start = i - 1
 			}
 		}
+		toks = append(toks, part[start:])
 	}
-	if len(decls) == 0 {
-		return nil, usageErr("선언이 하나도 없음")
-	}
-	return decls, nil
+	return toks
 }
 
-// matchConnectors — 선언 ↔ 발견 매핑. 선언된 커넥터가 발견 목록에 없으면 실패(미연결).
-func matchConnectors(servers []serverEntry, decls map[string]Declaration) (map[string]serverEntry, error) {
-	matched := map[string]serverEntry{}
-	for name, d := range decls {
-		found := serverEntry{}
-		for _, s := range servers {
-			if s.DisplayName == d.Match {
-				found = s
-				break
-			}
+// classifyTool — 토큰 중 하나라도 읽기 동사와 정확히 일치하면 읽기, 아니면 쓰기(D7).
+// 부분문자열 매칭 금지(update_target의 "get" 함정). 미확실 → 쓰기: 호스트 승인을 거치는 안전한 쪽.
+func classifyTool(name string) string {
+	for _, tok := range toolTokens(name) {
+		if readVerbs[strings.ToLower(tok)] {
+			return "read"
 		}
-		if found.ID == "" {
-			return nil, &RelayError{Kind: "auth",
-				Detail: "선언된 커넥터가 발견 목록에 없음: " + d.Match + " — claude.ai에서 커넥터를 연결하거나 선언에서 제거"}
-		}
-		matched[name] = found
 	}
-	return matched, nil
+	return "write"
 }
 
 // liveTools — tools/list 결과. 스키마 대조(D5)와 search_tools 상세 표시의 원천.
@@ -435,46 +388,41 @@ func fetchLiveTools(cred credentials, mcpsrvID string) (liveTools, error) {
 	return lt, nil
 }
 
-// compareDecl — 선언-실제 불일치 목록. 업스트림에 추가 도구가 있는 건 불일치가 아니다(미선언 표면).
-func compareDecl(d Declaration, live liveTools) []string {
-	var mismatches []string
-	for _, t := range d.Read {
-		if _, ok := live.schemas[t]; !ok {
-			mismatches = append(mismatches, fmt.Sprintf("%s.%s: 읽기로 선언됐으나 업스트림에 없음", d.Name, t))
-		}
-	}
-	for t := range d.Write {
-		if _, ok := live.schemas[t]; !ok {
-			mismatches = append(mismatches, fmt.Sprintf("%s.%s: 쓰기로 선언됐으나 업스트림에 없음", d.Name, t))
-		}
-	}
-	sort.Strings(mismatches)
-	return mismatches
-}
-
 // --- stdio MCP 서버 (도구 표면 4개, D3·D4) ---
 
+// conn — 노출 커넥터 1건: slug 접두사, 발견 DisplayName, 프록시 id, live 도구.
+type conn struct {
+	displayName string
+	id          string // mcpsrv_ 형식
+	live        liveTools
+}
+
 type relayState struct {
-	cred       credentials
-	decls      map[string]Declaration
-	matched    map[string]serverEntry
-	live       map[string]liveTools // decl name → live
-	liveToken  string               // 캐시 시점의 토큰 — 바뀌면 재취득
-	mismatches map[string][]string  // decl name → 불일치 (경보, 치명 아님)
+	cred        credentials
+	connectors  map[string]*conn  // slug → conn
+	unconnected map[string]string // 발견 DisplayName → tools/list 실패 요약 (status가 표시)
+	liveToken   string            // 캐시 시점의 토큰 — 바뀌면 재취득
 }
 
 var state *relayState
 
+func connectorSlugs() []string {
+	slugs := make([]string, 0, len(state.connectors))
+	for s := range state.connectors {
+		slugs = append(slugs, s)
+	}
+	sort.Strings(slugs)
+	return slugs
+}
+
 // bootstrap — 첫 상위 호출 시 1회 (initialize를 지연시키지 않는다).
+// 전역 실패(키체인·발견)만 fail fast — 커넥터별 tools/list 실패(미연결 401 등)는
+// unconnected에 기록하고 계속한다(D7).
 func bootstrap() error {
 	if state != nil && state.liveToken == state.cred.AccessToken {
 		return nil
 	}
 	cred, err := loadToken()
-	if err != nil {
-		return err
-	}
-	decls, err := loadDeclarations()
 	if err != nil {
 		return err
 	}
@@ -484,77 +432,65 @@ func bootstrap() error {
 	if err != nil {
 		return err
 	}
-	matched, err := matchConnectors(servers, decls)
-	if err != nil {
-		return err
-	}
-	st := &relayState{cred: cred, decls: decls, matched: matched,
-		live: map[string]liveTools{}, mismatches: map[string][]string{}}
-	for name, d := range decls {
-		live, err := fetchLiveTools(cred, matched[name].ID)
-		if err != nil {
-			return err
+	st := &relayState{cred: cred, connectors: map[string]*conn{}, unconnected: map[string]string{}}
+	for _, s := range servers {
+		slug := slugify(s.DisplayName)
+		if slug == "" {
+			st.unconnected[s.DisplayName] = "usage: DisplayName이 slug 규약으로 수렴하지 않음"
+			continue
 		}
-		st.live[name] = live
-		st.mismatches[name] = compareDecl(d, live)
+		if _, dup := st.connectors[slug]; dup {
+			return usageErr("커넥터 slug 충돌: %s — DisplayName %q와 %q가 규약으로 수렴", slug,
+				st.connectors[slug].displayName, s.DisplayName)
+		}
+		live, err := fetchLiveTools(cred, s.ID)
+		if err != nil {
+			st.unconnected[s.DisplayName] = errSummary(err)
+			continue
+		}
+		st.connectors[slug] = &conn{displayName: s.DisplayName, id: s.ID, live: live}
 	}
 	st.liveToken = cred.AccessToken
 	state = st
 	return nil
 }
 
-// findTool — "gmail.search_threads" 또는 bare 이름(전 선언에서 유일할 때만).
-func findTool(ref string) (Declaration, string, string, error) {
-	if decl, tool, ok := strings.Cut(ref, "."); ok {
-		d, exists := state.decls[decl]
+// errSummary — status·probe에 내보낼 오류 요약.
+func errSummary(err error) string {
+	if re, ok := err.(*RelayError); ok {
+		return re.Kind + ": " + re.Detail
+	}
+	return err.Error()
+}
+
+// findTool — "gmail.list_labels" 또는 bare 이름(전 커넥터에서 유일할 때만).
+func findTool(ref string) (*conn, string, error) {
+	if slug, tool, ok := strings.Cut(ref, "."); ok {
+		c, exists := state.connectors[slug]
 		if !exists {
-			return Declaration{}, "", "", usageErr("알 수 없는 커넥터: %s (선언됨: %v)", decl, declNames())
+			return nil, "", &RelayError{Kind: "not_found",
+				Detail: fmt.Sprintf("알 수 없는 커넥터: %s (연결됨: %v)", slug, connectorSlugs())}
 		}
-		if sliceContains(d.Read, tool) {
-			return d, tool, "read", nil
+		if _, ok := c.live.schemas[tool]; !ok {
+			return nil, "", &RelayError{Kind: "not_found",
+				Detail: fmt.Sprintf("%s.%s: 업스트림에 없는 도구", slug, tool)}
 		}
-		if _, ok := d.Write[tool]; ok {
-			return d, tool, "write", nil
-		}
-		return Declaration{}, "", "", &RelayError{Kind: "not_declared",
-			Detail: fmt.Sprintf("%s는 %s 선언에 없음", tool, decl)}
+		return c, tool, nil
 	}
 	var hits []string
-	for _, name := range declNames() {
-		d := state.decls[name]
-		if sliceContains(d.Read, ref) {
-			hits = append(hits, name+"."+ref)
-		}
-		if _, ok := d.Write[ref]; ok {
-			hits = append(hits, name+"."+ref)
+	for _, slug := range connectorSlugs() {
+		if _, ok := state.connectors[slug].live.schemas[ref]; ok {
+			hits = append(hits, slug+"."+ref)
 		}
 	}
 	switch len(hits) {
 	case 1:
 		return findTool(hits[0])
 	case 0:
-		return Declaration{}, "", "", &RelayError{Kind: "not_declared", Detail: "선언되지 않은 도구: " + ref}
+		return nil, "", &RelayError{Kind: "not_found", Detail: "존재하지 않는 도구: " + ref}
 	default:
-		return Declaration{}, "", "", usageErr("%s는 여러 선언에 있음 — 커넥터를 붙여 지정: %v", ref, hits)
+		return nil, "", usageErr("%s는 여러 커넥터에 있음 — 커넥터를 붙여 지정: %v", ref, hits)
 	}
-}
-
-func declNames() []string {
-	names := make([]string, 0, len(state.decls))
-	for n := range state.decls {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
-
-func sliceContains(list []string, s string) bool {
-	for _, v := range list {
-		if v == s {
-			return true
-		}
-	}
-	return false
 }
 
 // validateArgs — required 존재 + 타입 일치 + 스키마에 없는 키 거부.
@@ -619,35 +555,9 @@ func typeErr(toolRef, key, want string) error {
 	return &RelayError{Kind: "constraint", Detail: fmt.Sprintf("%s: 인자 %s는 %s여야 함", toolRef, key, want)}
 }
 
-// applyWriteConstraint — fixed 키는 호출자가 생략하면 주입, 다른 값을 실으면 거부.
-// types 키는 타입만 검사. 미선언 키는 validateArgs가 거부한다.
-func applyWriteConstraint(toolRef string, wc WriteConstraint, args map[string]any) (map[string]any, error) {
-	out := make(map[string]any, len(args)+len(wc.Fixed))
-	for k, v := range args {
-		out[k] = v
-	}
-	for k, want := range wc.Fixed {
-		if got, ok := args[k]; ok && !reflect.DeepEqual(got, want) {
-			return nil, &RelayError{Kind: "constraint",
-				Detail: fmt.Sprintf("%s: 인자 %s는 고정값 %s여야 함 (쓰기 제약)", toolRef, k, fmt.Sprint(want))}
-		}
-		out[k] = want
-	}
-	for k, want := range wc.Types {
-		if err := checkType(toolRef, k, want, args[k]); err != nil {
-			return nil, err
-		}
-	}
-	return out, nil
-}
-
 // callUpstream — 검증 통과 후 실제 호출. 업스트림 content를 그대로 전달한다.
-func callUpstream(d Declaration, tool string, args map[string]any) (json.RawMessage, bool, error) {
-	if _, ok := state.live[d.Name].schemas[tool]; !ok {
-		return nil, false, &RelayError{Kind: "not_declared",
-			Detail: fmt.Sprintf("%s.%s: 업스트림에 없음(선언-실제 불일치)", d.Name, tool)}
-	}
-	raw, cred, err := proxyCall(state.cred, state.matched[d.Name].ID, "tools/call",
+func callUpstream(c *conn, tool string, args map[string]any) (json.RawMessage, bool, error) {
+	raw, cred, err := proxyCall(state.cred, c.id, "tools/call",
 		map[string]any{"name": tool, "arguments": args})
 	if err != nil {
 		return nil, false, err
@@ -677,14 +587,13 @@ func toolSearchTools(args map[string]any) (map[string]any, bool, error) {
 		detail = "names"
 	}
 	var results []map[string]any
-	for _, name := range declNames() {
-		d := state.decls[name]
-		live := state.live[name]
-		check := func(tool string) {
+	for _, slug := range connectorSlugs() {
+		live := state.connectors[slug].live
+		for _, tool := range sortedToolNames(live) { // live 맵 순회가 랜덤 — 결정적 출력 유지
 			if !strings.Contains(tool, query) {
-				return
+				continue
 			}
-			entry := map[string]any{"tool": name + "." + tool}
+			entry := map[string]any{"tool": slug + "." + tool}
 			if detail == "descriptions" || detail == "schemas" {
 				entry["description"] = live.descriptions[tool]
 			}
@@ -693,14 +602,29 @@ func toolSearchTools(args map[string]any) (map[string]any, bool, error) {
 			}
 			results = append(results, entry)
 		}
-		for _, t := range d.Read {
-			check(t)
-		}
-		for t := range d.Write {
-			check(t)
-		}
 	}
 	return map[string]any{"tools": results}, false, nil
+}
+
+// sortedToolNames — live 스키마 맵의 도구명 정렬 목록.
+func sortedToolNames(live liveTools) []string {
+	names := make([]string, 0, len(live.schemas))
+	for n := range live.schemas {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// sortedReadTools — live 도구 중 읽기로 분류된 것의 정렬 목록.
+func sortedReadTools(live liveTools) []string {
+	var out []string
+	for _, t := range sortedToolNames(live) {
+		if classifyTool(t) == "read" {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func toolCall(kind string, args map[string]any) (any, bool, error) {
@@ -712,23 +636,17 @@ func toolCall(kind string, args map[string]any) (any, bool, error) {
 	if callArgs == nil {
 		callArgs = map[string]any{}
 	}
-	d, tool, gotKind, err := findTool(ref)
+	c, tool, err := findTool(ref)
 	if err != nil {
 		return nil, false, err
 	}
-	if gotKind != kind {
-		return nil, false, usageErr("%s는 %s 도구 — call_%s로 호출하세요", ref, gotKind, gotKind)
+	if got := classifyTool(tool); got != kind {
+		return nil, false, usageErr("%s는 %s 도구 — call_%s로 호출하세요", ref, got, got)
 	}
-	if kind == "write" {
-		callArgs, err = applyWriteConstraint(ref, d.Write[tool], callArgs)
-		if err != nil {
-			return nil, false, err
-		}
-	}
-	if err := validateArgs(ref, state.live[d.Name].schemas[tool], callArgs); err != nil {
+	if err := validateArgs(ref, c.live.schemas[tool], callArgs); err != nil {
 		return nil, false, err
 	}
-	content, isErr, err := callUpstream(d, tool, callArgs)
+	content, isErr, err := callUpstream(c, tool, callArgs)
 	if err != nil {
 		return nil, false, err
 	}
@@ -742,31 +660,44 @@ func toolStatus() (map[string]any, bool, error) {
 	if err != nil {
 		return nil, false, err
 	}
-	declared := map[string]bool{}
+	sort.Slice(servers, func(i, j int) bool { return servers[i].DisplayName < servers[j].DisplayName })
+	connected := map[string]bool{}
 	var connectors []map[string]any
-	for _, name := range declNames() {
-		d := state.decls[name]
-		declared[state.matched[name].DisplayName] = true
+	for _, slug := range connectorSlugs() {
+		c := state.connectors[slug]
+		connected[c.displayName] = true
+		read, write := countKinds(c.live)
 		connectors = append(connectors, map[string]any{
-			"name": name, "match": d.Match, "mcpsrv_id": state.matched[name].ID,
-			"read": len(d.Read), "write": len(d.Write),
-			"live_tools": len(state.live[name].schemas),
-			"mismatches": state.mismatches[name],
+			"slug": slug, "display_name": c.displayName, "mcpsrv_id": c.id,
+			"live_tools": len(c.live.schemas), "read": read, "write": write,
 		})
 	}
-	var undeclared []string
+	var unconnected []map[string]any
 	for _, s := range servers {
-		if !declared[s.DisplayName] {
-			undeclared = append(undeclared, s.DisplayName)
+		if connected[s.DisplayName] {
+			continue
+		}
+		unconnected = append(unconnected, map[string]any{
+			"display_name": s.DisplayName, "error": state.unconnected[s.DisplayName],
+		})
+	}
+	return map[string]any{
+		"relay":       map[string]any{"token_account": state.cred.Account, "connectors": len(state.connectors)},
+		"connectors":  connectors,
+		"unconnected": unconnected,
+		"discovered":  len(servers),
+	}, false, nil
+}
+
+// countKinds — 커넥터 live 도구의 읽기/쓰기 개수.
+func countKinds(live liveTools) (int, int) {
+	read := 0
+	for t := range live.schemas {
+		if classifyTool(t) == "read" {
+			read++
 		}
 	}
-	sort.Strings(undeclared)
-	return map[string]any{
-		"relay":      map[string]any{"token_account": state.cred.Account, "declared": len(state.decls)},
-		"connectors": connectors,
-		"undeclared": undeclared,
-		"discovered": len(servers),
-	}, false, nil
+	return read, len(live.schemas) - read
 }
 
 // --- stdio JSON-RPC 루프 ---
@@ -780,22 +711,22 @@ func toolDescriptors() []map[string]any {
 		return schema
 	}
 	return []map[string]any{
-		{"name": "search_tools", "description": "선언된 claude.ai 커넥터 도구 검색",
+		{"name": "search_tools", "description": "claude.ai 커넥터 live 도구 검색",
 			"inputSchema": argsSchema(map[string]any{
 				"query":  map[string]any{"type": "string", "description": "도구명 부분일치"},
 				"detail": map[string]any{"type": "string", "enum": []string{"names", "descriptions", "schemas"}, "description": "기본 names"},
 			}, "query")},
-		{"name": "call_read", "description": "읽기로 선언된 커넥터 도구 실행",
+		{"name": "call_read", "description": "읽기로 분류된 커넥터 도구 실행",
 			"inputSchema": argsSchema(map[string]any{
 				"tool": map[string]any{"type": "string", "description": "예: gmail.list_labels"},
 				"args": map[string]any{"type": "object"},
 			}, "tool")},
-		{"name": "call_write", "description": "쓰기로 선언된 도구 실행 — 인자 제약을 relay가 사전 검증",
+		{"name": "call_write", "description": "쓰기로 분류된 도구 실행 — 호스트 승인 대상",
 			"inputSchema": argsSchema(map[string]any{
-				"tool": map[string]any{"type": "string", "description": "예: gmail.unlabel_message"},
+				"tool": map[string]any{"type": "string", "description": "예: google_calendar.create_event"},
 				"args": map[string]any{"type": "object"},
 			}, "tool")},
-		{"name": "status", "description": "커넥터 상태·선언 대조·미선언 커넥터 목록",
+		{"name": "status", "description": "커넥터 상태·미연결 커넥터 목록",
 			"inputSchema": argsSchema(map[string]any{})},
 	}
 }
@@ -914,17 +845,13 @@ func rpcError(id json.RawMessage, code int, msg string) []byte {
 
 // --- 서브커맨드 ---
 
-// cmdProbe — 단위 1·2 종료 기준 검증: 토큰·발견·선언 매핑·혼합 호출·스키마 대조를 한 번에.
+// cmdProbe — 토큰·발견·전 커넥터 live 취득·분류·읽기 호출을 한 번에 검증한다.
+// 커넥터별 tools/list 실패(미연결 401 등)는 흡수하고 경고만 출력한다(D7).
 func cmdProbe() int {
 	cred, err := loadToken()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
-	}
-	decls, err := loadDeclarations()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return 2
 	}
 	servers, cred, err := withAuthRetry(cred, func(c credentials) ([]serverEntry, error) {
 		return discoverServers(c.AccessToken)
@@ -933,46 +860,48 @@ func cmdProbe() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 3
 	}
-	matched, err := matchConnectors(servers, decls)
+	fmt.Printf("relay=ok acct=%s discovered=%d\n", cred.Account, len(servers))
+	gmailRead, gmailID := "", "" // gmail.list_labels 우선
+	fallbackRead, fallbackID := "", ""
+	for _, s := range servers {
+		live, err := fetchLiveTools(cred, s.ID)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "%s: tools/list 실패(흡수) — %s\n", s.DisplayName, errSummary(err))
+			continue
+		}
+		read, write := countKinds(live)
+		fmt.Printf("%s (%s): tools=%d read=%d write=%d\n",
+			s.DisplayName, slugify(s.DisplayName), len(live.schemas), read, write)
+		reads := sortedReadTools(live)
+		if s.DisplayName == "Gmail" {
+			gmailID = s.ID
+			for _, t := range reads {
+				if t == "list_labels" || gmailRead == "" {
+					gmailRead = t
+					if t == "list_labels" {
+						break
+					}
+				}
+			}
+		}
+		if fallbackRead == "" && len(reads) > 0 {
+			fallbackRead, fallbackID = reads[0], s.ID
+		}
+	}
+	tool, id := gmailRead, gmailID
+	if tool == "" {
+		tool, id = fallbackRead, fallbackID
+	}
+	if tool == "" {
+		fmt.Fprintln(os.Stderr, "읽기 도구가 하나도 없어 probe 종료")
+		return 3
+	}
+	n, err := callEmptyArg(cred, id, tool)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintf(os.Stderr, "%s 실패: %v\n", tool, err)
 		return 3
 	}
-	fmt.Printf("relay=ok acct=%s connectors=%d\n", cred.Account, len(matched))
-	failed := false
-	for _, name := range []string{"gmail", "gcal"} {
-		d, ok := decls[name]
-		if !ok {
-			continue
-		}
-		entry := matched[name]
-		live, err := fetchLiveTools(cred, entry.ID)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s tools/list 실패: %v\n", name, err)
-			failed = true
-			continue
-		}
-		mismatches := compareDecl(d, live)
-		fmt.Printf("%s: tools=%d mismatches=%d\n", entry.DisplayName, len(live.schemas), len(mismatches))
-		for _, m := range mismatches {
-			fmt.Println("  " + m)
-		}
-	}
-	// 혼합 호출: 각 커넥터에서 빈 인자 읽기 도구 1건
-	for _, call := range []struct{ decl, tool string }{
-		{"gmail", "list_labels"}, {"gcal", "list_calendars"},
-	} {
-		n, err := callEmptyArg(cred, matched[call.decl].ID, call.tool)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "%s %s 실패: %v\n", call.decl, call.tool, err)
-			failed = true
-			continue
-		}
-		fmt.Printf("%s.%s → ok count=%d\n", call.decl, call.tool, n)
-	}
-	if failed {
-		return 3
-	}
+	fmt.Printf("%s → ok count=%d\n", tool, n)
 	return 0
 }
 
@@ -1053,52 +982,72 @@ func cmdSelfcheck() int {
 		fmt.Fprintln(os.Stderr, err)
 		return 2
 	}
-	// 내장 선언 구조 (커넥터 수는 선언 추가에 따라 변함 — 핵심 2건 존재만 단정)
-	decls, err := loadDeclarations()
-	if err := assert(err == nil && len(decls) >= 2, fmt.Sprintf("선언 로드: %v", err)); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	// 이름 규약: slug (D7)
+	for _, c := range [][2]string{
+		{"Gmail", "gmail"}, {"Google Calendar", "google_calendar"},
+		{"Zoom for Claude", "zoom_for_claude"}, {"Atlassian Rovo", "atlassian_rovo"},
+		{"Claude Data", "claude_data"}, {"A  --B!", "a_b"},
+	} {
+		if err := assert(slugify(c[0]) == c[1], fmt.Sprintf("slug %s → %s (실제 %s)", c[0], c[1], slugify(c[0]))); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	}
+	// 이름 규약: 읽기/쓰기 분류 경계 사례
+	for _, t := range []string{"list_events", "search_threads", "read_doc", "download_file_content",
+		"whoami", "capabilities_discover", "get_event"} {
+		if err := assert(classifyTool(t) == "read", "분류 읽기: "+t+" (실제 "+classifyTool(t)+")"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	}
+	for _, t := range []string{"unlabel_message", "suggest_time", "export_artifact", "set_status",
+		"update_target", "follow_meeting_transcript", "atlassianUserInfo"} {
+		if err := assert(classifyTool(t) == "write", "분류 쓰기: "+t+" (실제 "+classifyTool(t)+")"); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 2
+		}
+	}
+	// findTool — 합성 state로 오프라인 검증
+	state = &relayState{cred: credentials{AccessToken: "t"},
+		connectors: map[string]*conn{
+			"gmail": {displayName: "Gmail", id: "mcpsrv_g", live: liveTools{
+				schemas:      map[string]map[string]any{"list_labels": {}, "get_event": {}},
+				descriptions: map[string]string{}}},
+			"gcal": {displayName: "Google Calendar", id: "mcpsrv_c", live: liveTools{
+				schemas:      map[string]map[string]any{"get_event": {}, "list_events": {}},
+				descriptions: map[string]string{}}},
+		}, unconnected: map[string]string{}}
+	defer func() { state = nil }()
+	if c, tool, err := findTool("gmail.list_labels"); err != nil || tool != "list_labels" || c.id != "mcpsrv_g" {
+		fmt.Fprintln(os.Stderr, "selfcheck 실패: findTool 정확 지정")
 		return 2
 	}
-	gmail := decls["gmail"]
-	gcal, gcalOK := decls["gcal"]
-	if err := assert(gcalOK && len(gmail.Read) == 4 && gmail.Write["unlabel_message"].Fixed["labelIds"] != nil && len(gcal.Read) == 4,
-		"핵심 선언 내용"); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if _, _, err := findTool("nosuch.tool"); err == nil || !strings.Contains(err.Error(), "연결됨") {
+		fmt.Fprintln(os.Stderr, "selfcheck 실패: 알 수 없는 커넥터 감지")
 		return 2
 	}
-	// 쓰기 제약: fixed 주입 + 위반 거부
-	injected, err := applyWriteConstraint("gmail.unlabel_message",
-		gmail.Write["unlabel_message"], map[string]any{"messageId": "m1"})
-	if err := assert(err == nil && reflect.DeepEqual(injected["labelIds"], []any{"INBOX"}), "fixed 주입"); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if _, _, err := findTool("gmail.nothing"); err == nil {
+		fmt.Fprintln(os.Stderr, "selfcheck 실패: 없는 도구 감지")
 		return 2
 	}
-	if _, err := applyWriteConstraint("gmail.unlabel_message",
-		gmail.Write["unlabel_message"], map[string]any{"messageId": "m1", "labelIds": []any{"STARRED"}}); err == nil {
-		fmt.Fprintln(os.Stderr, "selfcheck 실패: fixed 위반을 잡지 못함")
+	if c, tool, err := findTool("list_labels"); err != nil || tool != "list_labels" || c.id != "mcpsrv_g" {
+		fmt.Fprintln(os.Stderr, "selfcheck 실패: bare 이름 유일 매칭")
 		return 2
 	}
-	// 선언-실제 대조: 없는 도구 감지
-	mismatches := compareDecl(
-		Declaration{Name: "x", Read: []string{"nonexistent", "list_labels"}},
-		liveTools{schemas: map[string]map[string]any{"list_labels": {}}},
-	)
-	if err := assert(len(mismatches) == 1 && strings.Contains(mismatches[0], "nonexistent"),
-		fmt.Sprintf("대조 감지: %v", mismatches)); err != nil {
-		fmt.Fprintln(os.Stderr, err)
+	if _, _, err := findTool("get_event"); err == nil || !strings.Contains(err.Error(), "여러 커넥터") {
+		fmt.Fprintln(os.Stderr, "selfcheck 실패: bare 이름 중복 감지")
 		return 2
 	}
-	// 선언-발견 매핑: 미발견 커넥터 감지
-	if _, err := matchConnectors([]serverEntry{{ID: "mcpsrv_1", DisplayName: "Gmail"}},
-		map[string]Declaration{"gmail": gmail}); err != nil {
-		fmt.Fprintln(os.Stderr, "매핑 성공 케이스 실패: "+err.Error())
+	if _, _, err := toolCall("write", map[string]any{"tool": "gmail.list_labels", "args": map[string]any{}}); err == nil || !strings.Contains(err.Error(), "call_read로") {
+		fmt.Fprintln(os.Stderr, "selfcheck 실패: kind 불일치 안내")
 		return 2
 	}
-	if _, err := matchConnectors([]serverEntry{}, map[string]Declaration{"gmail": gmail}); err == nil {
-		fmt.Fprintln(os.Stderr, "selfcheck 실패: 미발견 커넥터를 잡지 못함")
+	if read, write := countKinds(state.connectors["gmail"].live); read != 2 || write != 0 {
+		fmt.Fprintln(os.Stderr, fmt.Sprintf("selfcheck 실패: countKinds read=%d write=%d", read, write))
 		return 2
 	}
-	fmt.Println("selfcheck=ok (키체인 파서·env 제거·SSE 파서·규격 상수·uuid·선언 로드·쓰기 제약 주입·대조·매핑)")
+	fmt.Println("selfcheck=ok (키체인 파서·env 제거·SSE 파서·규격 상수·uuid·slug·분류·findTool·kind 안내·countKinds)")
 	return 0
 }
 
