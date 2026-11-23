@@ -35,7 +35,7 @@ tar -xzf claude-ai-relay_darwin_arm64.tar.gz
 
 버전 태그를 푸시하면 GitHub Actions가 macOS arm64 아카이브와 체크섬이 담긴 릴리스 **초안**을 만든다. 산출물을 확인한 뒤 GitHub에서 직접 공개한다. 공개 이벤트 후 별도 워크플로가 최신 안정 릴리스의 체크섬을 검증하고 Homebrew tap을 갱신한다. 공개하면 tap 갱신이 자동으로 시작되므로 공개 전에 두 작업의 승인 여부를 확인한다. 사전 릴리스는 Homebrew에 반영하지 않는다. 태그를 올리기 전에 `main.go`의 `version` 상수를 태그와 맞춘다 — serverInfo·clientInfo에 그대로 노출된다.
 
-원본 저장소의 Actions 비밀값 `HOMEBREW_TAP_TOKEN`에는 tap 저장소에만 접근하고 Contents 쓰기 권한을 가진 GitHub App 설치 토큰 또는 세분화 PAT가 필요하다. 릴리스 생성에는 기본 `GITHUB_TOKEN`을 사용한다. 비밀값은 저장소 설정에서 별도 승인 후 등록하고, 만료 또는 유출 시 교체한다.
+이 저장소의 Actions 비밀값 `HOMEBREW_TAP_TOKEN`에는 tap 저장소에만 접근하고 Contents 쓰기 권한을 가진 GitHub App 설치 토큰 또는 세분화 PAT가 필요하다. 릴리스 생성에는 기본 `GITHUB_TOKEN`을 사용한다. 비밀값은 저장소 설정에서 별도 승인 후 등록하고, 만료 또는 유출 시 교체한다.
 
 갱신에 실패하면 Actions의 **Update Homebrew tap** 실행 로그에서 원인을 확인한 후 해당 실행을 재실행하거나 워크플로를 수동 실행한다. 두 경로 모두 최신 공개 안정 릴리스와 체크섬을 다시 확인한다. 동일 버전의 URL·해시가 달라졌거나 기존 formula가 최신 공개 안정 릴리스보다 높은 버전을 가리킨다면 자동으로 덮어쓰지 않고 실패한다. 릴리스의 공개 상태와 기존 formula를 조사한 후 복구한다.
 
@@ -49,7 +49,7 @@ claude mcp add --scope user claude-ai-relay -- claude-ai-relay
 
 | 도구 | 설명 |
 |---|---|
-| `search_tools` | 커넥터 live 도구 검색 — 결과에 읽기/쓰기 분류(`kind`) 포함, `slug.tool` 전체에 부분일치 (`detail: names·descriptions·schemas`) |
+| `search_tools` | 커넥터 도구 검색 — 결과에 읽기/쓰기 분류(`kind`) 포함, `slug.tool` 전체에 부분일치 (`detail: names·descriptions·schemas`) |
 | `call_read` | 읽기로 분류된 도구 실행 (예: `gmail.search_threads`) |
 | `call_write` | 쓰기로 분류된 도구 실행 — 호스트 승인 대상 |
 | `status` | 커넥터 상태·미연결 커넥터 목록. 실패했던 커넥터의 취득을 재시도하고 읽기로 분류된 도구명(`read_tools`)도 싣는다 |
@@ -67,7 +67,7 @@ claude mcp add --scope user claude-ai-relay -- claude-ai-relay --no-cli-refresh
 
 ## 커넥터 노출 규칙
 
-claude.ai에 연결된 **모든 커넥터의 모든 live 도구**가 노출된다 (docs/DECISIONS.md D7). 노출 범위 통제는 호스트 Claude Code 권한 설정이 담당한다 — `call_read`는 자동 허용, `call_write`는 매번 확인이 기본 권장 설정이다.
+claude.ai에 연결된 **모든 커넥터의 모든 도구**가 노출된다 (docs/DECISIONS.md D7). 노출 범위 통제는 호스트 Claude Code 권한 설정이 담당한다 — `call_read`는 자동 허용, `call_write`는 매번 확인이 기본 권장 설정이다.
 
 - **커넥터 접두사**: 커넥터 표시명을 규약으로 변환한다 — 소문자화 + 알파벳·숫자 외 문자를 `_` 하나로 (예: `Gmail`→`gmail`, `Google Calendar`→`google_calendar`, `Zoom for Claude`→`zoom_for_claude`). 축약 테이블은 없다. claude.ai 측 표시명이 바뀌면 접두사도 같이 바뀐다.
 - **읽기/쓰기 분류**: 도구명 토큰에 쓰기 동사(create·send·delete·update·set·certify·invoke 등)가 하나라도 있으면 쓰기 — 읽기 동사가 섞여 있어도 그렇다 (`certify_query`는 조직 단위 쓰기다). 없으면 읽기 동사 토큰(get·list·search·find·read·describe·download·query·fetch·lookup·discover·whoami)이 하나라도 있을 때 읽기, 아니면 쓰기. 토큰은 정확일치만 맞춘다 (`list_labels`의 `labels`는 `label`이 아니다). 판단이 서지 않으면 쓰기로 편향한다 — `suggest_time`·`export_*`·`token_status` 같은 도구는 쓰기라 `call_write`로 호출해야 하고 호스트 승인을 거친다. 두 목록의 확장은 코드 수정이 필요하다(별도 지시 시).
@@ -82,7 +82,7 @@ claude.ai에 연결된 **모든 커넥터의 모든 live 도구**가 노출된�
 
 ## 제약
 
-Anthropic의 **비공개 API**(`api.anthropic.com/v1/mcp_servers`, `mcp-proxy.anthropic.com`)를 사용한다 — 사양 공지 없이 바뀔 수 있다. 전송 코드는 한 구획에 고립돼 있고 오류는 종류별로 노출된다. claude.ai 유료 구독 + 커넥터 연결 상태가 전제다.
+Anthropic의 **비공개 API**(`api.anthropic.com/v1/mcp_servers`, `mcp-proxy.anthropic.com`)를 사용한다 — 사양 공지 없이 바뀔 수 있다. 전송 코드는 한 구획에 고립돼 있고 오류는 종류별로 노출된다. claude.ai 유료 구독 + 커넥터 연결 상태가 전제다. 이 프로젝트는 Anthropic이 제공하거나 지원하지 않는 비공식 도구다.
 
 ## 개발
 
